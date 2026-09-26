@@ -1,0 +1,427 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  candidate
+  support
+  content_manager
+  admin
+  super_admin
+}
+
+enum UserStatus {
+  active
+  disabled
+  banned
+  deleting
+  deleted
+}
+
+enum ParseStatus {
+  pending
+  parsed
+  failed
+}
+
+enum GenerationStatus {
+  pending
+  generating
+  generated
+  failed
+}
+
+enum InterviewStatus {
+  draft
+  ready
+  in_progress
+  completed
+}
+
+enum SessionStatus {
+  started
+  in_progress
+  evaluating
+  evaluation_failed
+  completed
+  abandoned
+}
+
+enum EvaluationStatus {
+  pending
+  evaluating
+  completed
+  unavailable
+}
+
+enum BillingInterval {
+  one_time
+  monthly
+  yearly
+}
+
+enum SubscriptionStatus {
+  active
+  canceled
+  refunded
+  expired
+  past_due
+}
+
+enum PaymentStatus {
+  pending
+  success
+  failed
+  refund_pending
+  refunded
+}
+
+enum EventStatus {
+  received
+  processed
+  failed
+}
+
+enum JobState {
+  queued
+  running
+  succeeded
+  failed
+  canceled
+}
+
+model User {
+  id              String             @id @default(uuid()) @db.Uuid
+  firebaseUid     String             @unique
+  email           String             @unique
+  displayName     String
+  role            UserRole           @default(candidate)
+  status          UserStatus         @default(active)
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  deletedAt       DateTime?
+  resumes         Resume[]
+  interviews      Interview[]
+  sessions        Session[]
+  subscriptions   Subscription[]
+  usageLedger     UsageLedgerEntry[]
+  auditEvents     AuditEvent[]       @relation("AuditActor")
+  billingCustomer BillingCustomer?
+  paymentOrders   PaymentOrder[]
+  backgroundJobs  BackgroundJob[]
+
+  @@index([status, createdAt])
+}
+
+model Resume {
+  id            String        @id @default(uuid()) @db.Uuid
+  userId        String        @db.Uuid
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  storageKey    String        @unique
+  originalName  String
+  contentType   String
+  sizeBytes     Int
+  parseStatus   ParseStatus   @default(pending)
+  extractedText String?
+  parsedData    Json?
+  isDefault     Boolean       @default(false)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  deletedAt     DateTime?
+  chunks        ResumeChunk[]
+  interviews    Interview[]
+
+  @@index([userId, deletedAt, createdAt])
+}
+
+model ResumeChunk {
+  id               String   @id @default(uuid()) @db.Uuid
+  resumeId         String   @db.Uuid
+  resume           Resume   @relation(fields: [resumeId], references: [id], onDelete: Cascade)
+  ordinal          Int
+  section          String?
+  text             String
+  embeddingStatus  String   @default("not_requested")
+  embeddingModel   String?
+  embeddingVersion String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@unique([resumeId, ordinal])
+}
+
+model Interview {
+  id               String             @id @default(uuid()) @db.Uuid
+  userId           String             @db.Uuid
+  user             User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  resumeId         String?            @db.Uuid
+  resume           Resume?            @relation(fields: [resumeId], references: [id], onDelete: SetNull)
+  resumeSnapshot   Json?
+  jobTitle         String
+  company          String?
+  jobDescription   String
+  experienceLevel  String
+  questionCount    Int
+  generationStatus GenerationStatus   @default(pending)
+  status           InterviewStatus    @default(draft)
+  errorCode        String?
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+  questions        Question[]
+  sessions         Session[]
+  usageLedger      UsageLedgerEntry[]
+
+  @@index([userId, createdAt])
+  @@index([resumeId])
+}
+
+model Question {
+  id                String    @id @default(uuid()) @db.Uuid
+  interviewId       String    @db.Uuid
+  interview         Interview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
+  ordinal           Int
+  category          String
+  difficulty        String
+  prompt            String
+  expectedKeywords  String[]
+  rubric            Json?
+  generationVersion String
+  createdAt         DateTime  @default(now())
+  answers           Answer[]
+
+  @@unique([interviewId, ordinal])
+  @@unique([id, interviewId])
+}
+
+model Session {
+  id                     String             @id @default(uuid()) @db.Uuid
+  userId                 String             @db.Uuid
+  user                   User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  interviewId            String             @db.Uuid
+  interview              Interview          @relation(fields: [interviewId], references: [id], onDelete: Cascade)
+  status                 SessionStatus      @default(started)
+  currentQuestionOrdinal Int                @default(0)
+  startedAt              DateTime           @default(now())
+  completedAt            DateTime?
+  durationSeconds        Int                @default(0)
+  overallScore           Int?
+  feedback               Json?
+  evaluationJobId        String?            @unique @db.Uuid
+  evaluationJob          BackgroundJob?     @relation("SessionEvaluation", fields: [evaluationJobId], references: [id], onDelete: SetNull)
+  createdAt              DateTime           @default(now())
+  updatedAt              DateTime           @updatedAt
+  answers                Answer[]
+  usageLedger            UsageLedgerEntry[]
+
+  @@unique([id, interviewId])
+  @@index([userId, createdAt])
+  @@index([interviewId, status])
+}
+
+model Answer {
+  id               String           @id @default(uuid()) @db.Uuid
+  interviewId      String           @db.Uuid
+  sessionId        String           @db.Uuid
+  session          Session          @relation(fields: [sessionId, interviewId], references: [id, interviewId], onDelete: Cascade)
+  questionId       String           @db.Uuid
+  question         Question         @relation(fields: [questionId, interviewId], references: [id, interviewId], onDelete: Restrict)
+  text             String
+  skipped          Boolean          @default(false)
+  timeTakenSeconds Int              @default(0)
+  submittedAt      DateTime         @default(now())
+  score            Int?
+  feedback         String?
+  evaluationStatus EvaluationStatus @default(pending)
+
+  @@unique([sessionId, questionId])
+  @@index([questionId])
+}
+
+model Plan {
+  id              String          @id @default(uuid()) @db.Uuid
+  code            String          @unique
+  name            String
+  description     String
+  billingInterval BillingInterval @default(one_time)
+  currency        String          @default("INR")
+  amountMinor     Int
+  providerPriceId String?         @unique
+  active          Boolean         @default(true)
+  entitlements    Json
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  subscriptions   Subscription[]
+  paymentOrders   PaymentOrder[]
+}
+
+model BillingCustomer {
+  id                 String   @id @default(uuid()) @db.Uuid
+  userId             String   @unique @db.Uuid
+  user               User     @relation(fields: [userId], references: [id], onDelete: Restrict)
+  provider           String
+  providerCustomerId String   @unique
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+}
+
+model Subscription {
+  id                     String             @id @default(uuid()) @db.Uuid
+  userId                 String             @db.Uuid
+  user                   User               @relation(fields: [userId], references: [id], onDelete: Restrict)
+  planId                 String             @db.Uuid
+  plan                   Plan               @relation(fields: [planId], references: [id], onDelete: Restrict)
+  orderId                String?            @unique @db.Uuid
+  order                  PaymentOrder?      @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  providerSubscriptionId String?            @unique
+  status                 SubscriptionStatus @default(active)
+  creditLimit            Int
+  currentPeriodStart     DateTime
+  currentPeriodEnd       DateTime
+  cancelAtPeriodEnd      Boolean            @default(false)
+  canceledAt             DateTime?
+  createdAt              DateTime           @default(now())
+  updatedAt              DateTime           @updatedAt
+
+  @@index([userId, status, currentPeriodEnd])
+}
+
+model PaymentOrder {
+  id              String         @id @default(uuid()) @db.Uuid
+  userId          String         @db.Uuid
+  user            User           @relation(fields: [userId], references: [id], onDelete: Restrict)
+  planId          String         @db.Uuid
+  plan            Plan           @relation(fields: [planId], references: [id], onDelete: Restrict)
+  transactionId   String         @unique
+  idempotencyKey  String         @unique
+  amountMinor     Int
+  currency        String         @default("INR")
+  creditLimit     Int
+  durationDays    Int
+  status          PaymentStatus  @default(pending)
+  payuId          String?        @unique
+  refundToken     String?        @unique
+  refundRequestId String?        @unique
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  subscriptions   Subscription[]
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+}
+
+model PaymentEvent {
+  id              String      @id @default(uuid()) @db.Uuid
+  provider        String
+  providerEventId String
+  eventType       String
+  receivedAt      DateTime    @default(now())
+  processedAt     DateTime?
+  status          EventStatus @default(received)
+  error           String?
+
+  @@unique([provider, providerEventId])
+  @@index([status, receivedAt])
+}
+
+model UsageLedgerEntry {
+  id             String     @id @default(uuid()) @db.Uuid
+  userId         String     @db.Uuid
+  user           User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessionId      String?    @db.Uuid
+  session        Session?   @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  interviewId    String?    @db.Uuid
+  interview      Interview? @relation(fields: [interviewId], references: [id], onDelete: SetNull)
+  feature        String
+  unitsDelta     Int
+  periodKey      String
+  reason         String
+  idempotencyKey String     @unique
+  createdAt      DateTime   @default(now())
+
+  @@index([userId, feature, periodKey])
+}
+
+model BackgroundJob {
+  id                String    @id @default(uuid()) @db.Uuid
+  ownerUserId       String?   @db.Uuid
+  owner             User?     @relation(fields: [ownerUserId], references: [id], onDelete: SetNull)
+  resourceType      String
+  resourceId        String    @db.Uuid
+  kind              String
+  state             JobState  @default(queued)
+  attempts          Int       @default(0)
+  nextAttemptAt     DateTime?
+  errorCode         String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  evaluationSession Session?  @relation("SessionEvaluation")
+
+  @@unique([resourceType, resourceId, kind])
+  @@index([state, nextAttemptAt])
+  @@index([ownerUserId, createdAt])
+}
+
+model JobSource {
+  id        String       @id @default(uuid()) @db.Uuid
+  name      String       @unique
+  baseUrl   String?
+  enabled   Boolean      @default(true)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+  listings  JobListing[]
+  syncRuns  JobSyncRun[]
+}
+
+model JobListing {
+  id          String    @id @default(uuid()) @db.Uuid
+  sourceId    String    @db.Uuid
+  source      JobSource @relation(fields: [sourceId], references: [id], onDelete: Restrict)
+  externalId  String
+  title       String
+  company     String
+  location    String?
+  description String
+  applyUrl    String
+  postedAt    DateTime?
+  expiresAt   DateTime?
+  active      Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([sourceId, externalId])
+  @@index([active, expiresAt, postedAt])
+}
+
+model JobSyncRun {
+  id         String    @id @default(uuid()) @db.Uuid
+  sourceId   String    @db.Uuid
+  source     JobSource @relation(fields: [sourceId], references: [id], onDelete: Restrict)
+  status     JobState  @default(queued)
+  fetched    Int       @default(0)
+  inserted   Int       @default(0)
+  updated    Int       @default(0)
+  errorCode  String?
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+
+  @@index([sourceId, startedAt])
+}
+
+model AuditEvent {
+  id          String   @id @default(uuid()) @db.Uuid
+  actorUserId String?  @db.Uuid
+  actor       User?    @relation("AuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  action      String
+  targetType  String
+  targetId    String
+  metadata    Json?
+  createdAt   DateTime @default(now())
+
+  @@index([actorUserId, createdAt])
+  @@index([targetType, targetId, createdAt])
+}

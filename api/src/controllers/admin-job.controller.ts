@@ -12,13 +12,16 @@ import type { Request, Response, NextFunction } from 'express';
 
 import Job from '../models/job.model';
 import AppError from '../utils/app-error';
+const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const boundedPage = (value: unknown, fallback: number) => Math.max(1, Math.min(100000, Number.parseInt(String(value), 10) || fallback));
+const boundedLimit = (value: unknown, fallback: number) => Math.max(1, Math.min(100, Number.parseInt(String(value), 10) || fallback));
 // ─── Duplicate Detection Helper ──────────────────────────────────
 // Returns true if a job with same title, company, and location already exists (unarchived).
 const checkDuplicateJob = async (title, company, location) => {
   const existing = await Job.findOne({
-    title:    { $regex: `^${title.trim()}$`, $options: 'i' },
-    company:  { $regex: `^${company.trim()}$`, $options: 'i' },
-    location: { $regex: `^${location.trim()}$`, $options: 'i' },
+    title:    { $regex: `^${escapeRegex(title.trim())}$`, $options: 'i' },
+    company:  { $regex: `^${escapeRegex(company.trim())}$`, $options: 'i' },
+    location: { $regex: `^${escapeRegex(location.trim())}$`, $options: 'i' },
     isArchived: false,
   });
   return !!existing;
@@ -31,7 +34,11 @@ export const createJob = async (req: Request, res: Response, next: NextFunction)
     contractType, category, isFeatured, isPinned, applyUrl, ignoreDuplicate
   } = req.body;
 
-  if (!title || !company || !description) {
+  if (typeof title !== 'string' || !title.trim() || title.length > 200 ||
+    typeof company !== 'string' || !company.trim() || company.length > 200 ||
+    typeof description !== 'string' || !description.trim() || description.length > 20000 ||
+    (location !== undefined && (typeof location !== 'string' || location.length > 200)) ||
+    (applyUrl && (typeof applyUrl !== 'string' || !/^https:\/\//i.test(applyUrl) || applyUrl.length > 2048))) {
     return next(new AppError('Job title, company, and description are required.', 400));
   }
 
@@ -67,10 +74,10 @@ export const createJob = async (req: Request, res: Response, next: NextFunction)
 
 // ─── GET /api/admin/jobs ───────────────────────────────────────────
 export const getAllJobs = async (req: Request, res: Response) => {
-  const page         = parseInt(String(req.query.page))  || 1;
-  const limit        = parseInt(String(req.query.limit)) || 15;
+  const page         = boundedPage(req.query.page, 1);
+  const limit        = boundedLimit(req.query.limit, 15);
   const skip         = (page - 1) * limit;
-  const search       = req.query.search || '';
+  const search       = String(req.query.search || '').slice(0, 100);
   const contractType = req.query.contractType;
   const filterType   = req.query.filterType; // 'all' | 'featured' | 'pinned' | 'archived'
   const sortBy       = req.query.sortBy  || 'createdAt';
@@ -81,8 +88,8 @@ export const getAllJobs = async (req: Request, res: Response) => {
   if (search) {
     // @ts-expect-error TODO(ts-migration): type this site
     filter.$or = [
-      { title:   { $regex: search, $options: 'i' } },
-      { company: { $regex: search, $options: 'i' } },
+      { title:   { $regex: escapeRegex(search), $options: 'i' } },
+      { company: { $regex: escapeRegex(search), $options: 'i' } },
     ];
   }
 
@@ -108,7 +115,7 @@ export const getAllJobs = async (req: Request, res: Response) => {
 
   // Sort query builder: Pinned jobs are always forced to the top, then custom sort
   const sortQuery = { isPinned: -1 };
-  Object.assign(sortQuery, { [String(sortBy)]: sortDir === 'asc' ? 1 : -1 });
+  Object.assign(sortQuery, { [['createdAt', 'title', 'company', 'postedTime'].includes(String(sortBy)) ? String(sortBy) : 'createdAt']: sortDir === 'asc' ? 1 : -1 });
 
   const [jobs, total] = await Promise.all([
     Job.find(filter)
@@ -211,7 +218,8 @@ export const deleteJob = async (req: Request, res: Response, next: NextFunction)
 export const bulkJobAction = async (req: Request, res: Response, next: NextFunction) => {
   const { jobIds, action } = req.body;
 
-  if (!jobIds || !Array.isArray(jobIds) || jobIds.length === 0) {
+  if (!jobIds || !Array.isArray(jobIds) || jobIds.length === 0 || jobIds.length > 100 ||
+    jobIds.some(id => typeof id !== 'string' || !/^[a-f\d]{24}$/i.test(id))) {
     return next(new AppError('No job IDs provided.', 400));
   }
 

@@ -9,7 +9,7 @@ import mongoose from 'mongoose';
 const systemSettingSchema = new mongoose.Schema(
   {
     general: {
-      appName: { type: String, default: 'InterviewMaster' },
+      appName: { type: String, default: 'Rehearsly' },
       logo: { type: String, default: '' },
       theme: { type: String, enum: ['dark', 'light', 'custom'], default: 'dark' },
       maintenanceMode: { type: Boolean, default: false },

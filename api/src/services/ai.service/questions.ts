@@ -71,7 +71,7 @@ Return structured JSON exactly in this format:
     temperature: 0.7,
     max_tokens: 4096,
     response_format: { type: 'json_object' },
-  });
+  }, { signal: AbortSignal.timeout(45_000), maxRetries: 1 });
 
   const content = response.choices[0]?.message?.content;
   if (!content) throw new Error('No response from AI model.');
@@ -90,30 +90,27 @@ Return structured JSON exactly in this format:
     throw new Error('AI returned no valid questions. Please try again.');
   }
 
-  // Flatten and map to MongoDB question schema format
-  const allQuestions = [];
-  
-  technicalQs.forEach(q => {
-    allQuestions.push({
-      questionText: q.questionText || q.question || '',
-      category: 'technical',
-      difficulty: q.difficulty || 'medium',
-      expectedKeywords: Array.isArray(q.expectedKeywords) ? q.expectedKeywords : [],
-    });
+  const allQuestions = [
+    ...technicalQs.map(q => ({ ...q, category: 'technical' })),
+    ...behavioralQs.map(q => ({ ...q, category: 'behavioral' })),
+  ].slice(0, numberOfQuestions);
+  if (allQuestions.length !== numberOfQuestions) throw new Error('AI returned the wrong question count.');
+  const seen = new Set<string>();
+  return allQuestions.map((q, i) => {
+    const questionText = String(q.questionText || '').trim();
+    const difficulty = String(q.difficulty || '');
+    const expectedKeywords = q.expectedKeywords;
+    const normalized = questionText.toLowerCase().replace(/\s+/g, ' ');
+    if (questionText.length < 15 || questionText.length > 500 || seen.has(normalized) ||
+      !['easy', 'medium', 'hard'].includes(difficulty) ||
+      !Array.isArray(expectedKeywords) || expectedKeywords.length < 1 || expectedKeywords.length > 10 ||
+      expectedKeywords.some((keyword: unknown) => typeof keyword !== 'string' || !keyword.trim() || keyword.length > 80)) {
+      throw new Error('AI returned malformed questions.');
+    }
+    seen.add(normalized);
+    return { questionText, category: q.category, difficulty,
+      expectedKeywords: expectedKeywords.map((keyword: string) => keyword.trim()), order: i + 1 };
   });
-
-  behavioralQs.forEach(q => {
-    allQuestions.push({
-      questionText: q.questionText || q.question || '',
-      category: 'behavioral',
-      difficulty: q.difficulty || 'medium',
-      expectedKeywords: Array.isArray(q.expectedKeywords) ? q.expectedKeywords : [],
-    });
-  });
-
-  // Safety slice: ensure we never return more than the requested number of questions
-  const trimmed = allQuestions.slice(0, numberOfQuestions);
-  return trimmed.map((q, i) => ({ ...q, order: i + 1 }));
 };
 
 /**

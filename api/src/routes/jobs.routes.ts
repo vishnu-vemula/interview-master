@@ -19,10 +19,8 @@
 
 import { Router } from 'express';
 import { query, param, body, validationResult } from 'express-validator';
-    // @ts-expect-error TODO(ts-migration): type this site
-import jobsController from '../controllers/jobs.controller';
-    // @ts-expect-error TODO(ts-migration): type this site
-import jobsCache from '../utils/jobs-cache';
+import * as jobsController from '../controllers/jobs.controller';
+import * as jobsCache from '../utils/jobs-cache';
 import { circuitBreaker } from '../utils/adzuna-client';
 import { protect } from '../middleware/auth.middleware';
 
@@ -135,17 +133,6 @@ router.get(
   '/recommended',
   protect,
   jobsController.getRecommendedJobs
-);
-
-router.post(
-  '/generate-questions',
-  protect,
-  [
-    body('jobTitle').trim().notEmpty().withMessage('Job title is required'),
-    body('jobDescription').trim().notEmpty().withMessage('Job description is required'),
-  ],
-  validate,
-  jobsController.generateQuestionsFromDesc
 );
 
 router.get(

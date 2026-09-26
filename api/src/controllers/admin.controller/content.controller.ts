@@ -7,15 +7,18 @@ import Job from '../../models/job.model';
 import Transaction from '../../models/transaction.model';
 import AuditLog from '../../models/audit-log.model';
 import AppError from '../../utils/app-error';
-const ADMIN_EMAIL = 'admin@interviewmaster.com';
-const ADMIN_ROLES = ['admin', 'super_admin'];
+import cloudinary from '../../config/cloudinary';
+
+const pagination = (req: Request) => {
+  const page = Math.max(1, Math.min(100000, Number.parseInt(String(req.query.page || '1'), 10) || 1));
+  const limit = Math.max(1, Math.min(100, Number.parseInt(String(req.query.limit || '20'), 10) || 20));
+  return { page, limit, skip: (page - 1) * limit };
+};
 
 
 // ─── GET /api/admin/interviews ─────────────────────────────────────
 export const getAllInterviews = async (req: Request, res: Response) => {
-  const page  = parseInt(String(req.query.page))  || 1;
-  const limit = parseInt(String(req.query.limit)) || 20;
-  const skip  = (page - 1) * limit;
+  const { page, limit, skip } = pagination(req);
 
   const [interviews, total] = await Promise.all([
     Interview.find()
@@ -37,19 +40,15 @@ export const deleteInterview = async (req: Request, res: Response, next: NextFun
   const interview = await Interview.findById(req.params.id);
   if (!interview) return next(new AppError('Interview not found.', 404));
 
-  await Promise.all([
-    Session.deleteMany({ interviewId: interview._id }),
-    interview.deleteOne(),
-  ]);
+  await Session.deleteMany({ interviewId: interview._id });
+  await interview.deleteOne();
 
   res.status(200).json({ success: true, message: 'Interview and its sessions deleted.' });
 };
 
 // ─── GET /api/admin/sessions ───────────────────────────────────────
 export const getAllSessions = async (req: Request, res: Response) => {
-  const page  = parseInt(String(req.query.page))  || 1;
-  const limit = parseInt(String(req.query.limit)) || 20;
-  const skip  = (page - 1) * limit;
+  const { page, limit, skip } = pagination(req);
 
   const [sessions, total] = await Promise.all([
     Session.find()
@@ -77,9 +76,7 @@ export const deleteSession = async (req: Request, res: Response, next: NextFunct
 
 // ─── GET /api/admin/resumes ────────────────────────────────────────
 export const getAllResumes = async (req: Request, res: Response) => {
-  const page  = parseInt(String(req.query.page))  || 1;
-  const limit = parseInt(String(req.query.limit)) || 20;
-  const skip  = (page - 1) * limit;
+  const { page, limit, skip } = pagination(req);
 
   const [resumes, total] = await Promise.all([
     Resume.find()
@@ -98,8 +95,23 @@ export const getAllResumes = async (req: Request, res: Response) => {
 
 // ─── DELETE /api/admin/resumes/:id ────────────────────────────────
 export const deleteResume = async (req: Request, res: Response, next: NextFunction) => {
-  const resume = await Resume.findByIdAndDelete(req.params.id);
+  const resume = await Resume.findById(req.params.id);
   if (!resume) return next(new AppError('Resume not found.', 404));
+
+  if (await Interview.exists({ resumeId: resume._id })) {
+    return next(new AppError('This resume is used by an interview and cannot be deleted.', 409));
+  }
+
+  try {
+    const result = await cloudinary.uploader.destroy(resume.publicId, {
+      resource_type: 'raw', type: resume.deliveryType,
+    });
+    if (!['ok', 'not found'].includes(result.result)) throw new Error('Storage deletion failed');
+  } catch {
+    return next(new AppError('Could not delete the stored resume. Please retry.', 503));
+  }
+
+  await resume.deleteOne();
 
   res.status(200).json({ success: true, message: 'Resume deleted.' });
 };

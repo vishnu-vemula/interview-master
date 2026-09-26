@@ -12,9 +12,13 @@ import {
 } from '../controllers/interview.controller';
 
 const createValidation = [
-  body('jobTitle').trim().notEmpty().withMessage('Job title is required'),
+  body('jobTitle').trim().isLength({ min: 2, max: 120 }).withMessage('Job title must be 2-120 characters'),
+  body('company').optional().trim().isLength({ max: 120 }),
   body('jobDescription').trim().notEmpty().withMessage('Job description is required')
-    .isLength({ min: 50 }).withMessage('Job description must be at least 50 characters'),
+    .isLength({ min: 50, max: 5000 }).withMessage('Job description must be 50-5000 characters'),
+  body('resumeId').optional({ values: 'falsy' }).isMongoId().withMessage('Invalid resume'),
+  body('questionTypes').optional().isArray({ min: 1, max: 5 }).withMessage('Invalid question types'),
+  body('questionTypes.*').optional().isIn(['technical', 'behavioral', 'situational', 'hr', 'culture_fit']),
   body('experienceLevel')
     .optional()
     .isIn(['entry', 'mid', 'senior', 'lead', 'executive'])

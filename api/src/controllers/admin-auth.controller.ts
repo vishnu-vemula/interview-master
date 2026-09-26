@@ -1,4 +1,5 @@
 import type { Request, Response, NextFunction } from 'express';
+import { firebaseMode } from '../services/firebase-identity.service';
 /**
  * controllers/adminAuth.controller.js
  *
@@ -18,7 +19,6 @@ import AppError from '../utils/app-error';
 import { generateAccessToken, generateRefreshToken } from '../utils/jwt.utils';
 import { getRolePermissions } from '../middleware/rbac';
 
-const ADMIN_EMAIL   = 'admin@interviewmaster.com';
 const ADMIN_ROLES   = ['admin', 'super_admin', 'support', 'content_manager'];
 
 // ─── Shared: build admin token response ───────────────────────────
@@ -45,6 +45,7 @@ const sendAdminTokenResponse = (user, statusCode, res) => {
 
 // ─── POST /api/admin/auth/login ───────────────────────────────────
 export const adminLogin = async (req: Request, res: Response, next: NextFunction) => {
+  if (firebaseMode()) return next(new AppError('Use Firebase Authentication to sign in.', 410));
   const { email, password } = req.body;
 
   if (!email || !password) {
@@ -72,11 +73,6 @@ export const adminLogin = async (req: Request, res: Response, next: NextFunction
     return next(new AppError('This admin account has been banned.', 403));
   }
 
-  // Self-heal: if the designated super admin email, always ensure super_admin role
-  if (user.email === ADMIN_EMAIL && user.role !== 'super_admin') {
-    user.role = 'super_admin';
-  }
-
   user.lastLogin = new Date();
   await user.save({ validateBeforeSave: false });
 
@@ -92,6 +88,7 @@ export const adminLogout = async (req: Request, res: Response) => {
 
 // ─── POST /api/admin/auth/refresh ────────────────────────────────
 export const adminRefreshToken = async (req: Request, res: Response, next: NextFunction) => {
+  if (firebaseMode()) return next(new AppError('Firebase refreshes identity tokens.', 410));
   const { refreshToken } = req.body;
 
   if (!refreshToken) {
@@ -100,7 +97,7 @@ export const adminRefreshToken = async (req: Request, res: Response, next: NextF
 
   try {
     const decoded: any = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
-    const user    = await User.findById(decoded.id);
+    const user: any = await User.findById(decoded.id).select('+passwordChangedAt');
 
     if (!user) {
       return next(new AppError('Admin account no longer exists.', 401));
@@ -116,6 +113,10 @@ export const adminRefreshToken = async (req: Request, res: Response, next: NextF
 
     if (user.isBanned) {
       return next(new AppError('Account has been banned.', 403));
+    }
+
+    if (user.changedPasswordAfter(decoded.iat)) {
+      return next(new AppError('Password recently changed. Please log in again.', 401));
     }
 
     const newAccessToken = generateAccessToken(user._id);

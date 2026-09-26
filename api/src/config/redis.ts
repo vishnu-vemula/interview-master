@@ -130,6 +130,7 @@ async function connect(): Promise<void> {
       await client.connect();
     } catch (err) {
       console.error('[Redis] Failed to connect on startup:', (err as Error).message);
+      throw err;
     }
   }
 }

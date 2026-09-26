@@ -8,15 +8,17 @@
 import jwt, { Secret } from 'jsonwebtoken';
 import type { Response } from 'express';
 
-/** Fallback secrets so signing never receives `undefined` in misconfigured envs */
-const ACCESS_SECRET: Secret  = process.env.JWT_SECRET         || 'dev_access_secret_change_me';
-const REFRESH_SECRET: Secret = process.env.JWT_REFRESH_SECRET || 'dev_refresh_secret_change_me';
+const secret = (name: string): Secret => {
+  const value = process.env[name];
+  if (!value || value.length < 32) throw new Error(`${name} must be at least 32 characters`);
+  return value;
+};
 
 /**
  * Generate a signed access token for a user.
  */
 const generateAccessToken = (userId: any): string =>
-  jwt.sign({ id: userId }, ACCESS_SECRET, {
+  jwt.sign({ id: userId }, secret('JWT_SECRET'), {
     expiresIn: (process.env.JWT_EXPIRE as any) || '7d',
   });
 
@@ -24,7 +26,7 @@ const generateAccessToken = (userId: any): string =>
  * Generate a signed refresh token for a user.
  */
 const generateRefreshToken = (userId: any): string =>
-  jwt.sign({ id: userId }, REFRESH_SECRET, {
+  jwt.sign({ id: userId }, secret('JWT_REFRESH_SECRET'), {
     expiresIn: (process.env.JWT_REFRESH_EXPIRE as any) || '30d',
   });
 

@@ -14,7 +14,7 @@ const getOrCreateSettings = async () => {
   if (!settings) {
     settings = await SystemSetting.create({
       general: {
-        appName: 'InterviewMaster',
+        appName: 'Rehearsly',
         logo: '',
         theme: 'dark',
         maintenanceMode: false,
@@ -33,7 +33,7 @@ const getOrCreateSettings = async () => {
         maxTokens: 1024,
       },
       storage: {
-        provider: 'local',
+        provider: 'cloudinary',
         cloudinary: { cloudName: '', apiKey: '', apiSecret: '' },
         aws: { bucket: '', region: '', accessKey: '', secretKey: '' },
       },
@@ -48,17 +48,27 @@ const getOrCreateSettings = async () => {
   return settings;
 };
 
+const safeSettings = (settings: any) => {
+  const value = settings.toObject();
+  value.security.apiKeys = { groq: '', stripe: '', adzunaId: '', adzunaKey: '' };
+  value.storage.cloudinary.apiKey = '';
+  value.storage.cloudinary.apiSecret = '';
+  value.storage.aws.accessKey = '';
+  value.storage.aws.secretKey = '';
+  return value;
+};
+
 // ─── GET /api/admin/settings ───────────────────────────────────────
 export const getSettings = async (req: Request, res: Response) => {
   const settings = await getOrCreateSettings();
-  res.status(200).json({ success: true, settings });
+  res.status(200).json({ success: true, settings: safeSettings(settings) });
 };
 
 // ─── PATCH /api/admin/settings ─────────────────────────────────────
 export const saveSettings = async (req: Request, res: Response) => {
   const settings = await getOrCreateSettings();
 
-  const { general, security, ai, storage, featureFlags } = req.body;
+  const { general, security, ai, featureFlags } = req.body;
 
   // Merge general settings
   if (general) {
@@ -78,12 +88,6 @@ export const saveSettings = async (req: Request, res: Response) => {
   // Merge security configs
   if (security) {
     if (security.jwtExpiry !== undefined) settings.security.jwtExpiry = security.jwtExpiry;
-    if (security.apiKeys) {
-      if (security.apiKeys.groq !== undefined)      settings.security.apiKeys.groq      = security.apiKeys.groq;
-      if (security.apiKeys.stripe !== undefined)    settings.security.apiKeys.groq      = security.apiKeys.stripe;
-      if (security.apiKeys.adzunaId !== undefined)  settings.security.apiKeys.adzunaId  = security.apiKeys.adzunaId;
-      if (security.apiKeys.adzunaKey !== undefined) settings.security.apiKeys.adzunaKey = security.apiKeys.adzunaKey;
-    }
     if (security.rateLimits) {
       if (security.rateLimits.windowMs !== undefined)    settings.security.rateLimits.windowMs    = security.rateLimits.windowMs;
       if (security.rateLimits.maxRequests !== undefined) settings.security.rateLimits.maxRequests = security.rateLimits.maxRequests;
@@ -97,22 +101,6 @@ export const saveSettings = async (req: Request, res: Response) => {
     if (ai.maxTokens !== undefined)   settings.ai.maxTokens   = parseInt(ai.maxTokens) || 1024;
   }
 
-  // Merge Storage config
-  if (storage) {
-    if (storage.provider !== undefined) settings.storage.provider = storage.provider;
-    if (storage.cloudinary) {
-      if (storage.cloudinary.cloudName !== undefined) settings.storage.cloudinary.cloudName = storage.cloudinary.cloudName;
-      if (storage.cloudinary.apiKey !== undefined)    settings.storage.cloudinary.apiKey    = storage.cloudinary.apiKey;
-      if (storage.cloudinary.apiSecret !== undefined) settings.storage.cloudinary.apiSecret = storage.cloudinary.apiSecret;
-    }
-    if (storage.aws) {
-      if (storage.aws.bucket !== undefined)    settings.storage.aws.bucket    = storage.aws.bucket;
-      if (storage.aws.region !== undefined)    settings.storage.aws.region    = storage.aws.region;
-      if (storage.aws.accessKey !== undefined) settings.storage.aws.accessKey = storage.aws.accessKey;
-      if (storage.aws.secretKey !== undefined) settings.storage.aws.secretKey = storage.aws.secretKey;
-    }
-  }
-
   // Merge Feature Flags
   if (featureFlags) {
     if (featureFlags.enableJobs !== undefined)    settings.featureFlags.enableJobs    = featureFlags.enableJobs;
@@ -123,5 +111,5 @@ export const saveSettings = async (req: Request, res: Response) => {
 
   await settings.save();
 
-  res.status(200).json({ success: true, settings });
+  res.status(200).json({ success: true, settings: safeSettings(settings) });
 };

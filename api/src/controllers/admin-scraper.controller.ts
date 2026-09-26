@@ -13,7 +13,6 @@ import User from '../models/user.model';
     // @ts-expect-error TODO(ts-migration): type this site
 import adzunaService from '../services/adzuna.service';
 import AppError from '../utils/app-error';
-const ADMIN_EMAIL = 'admin@interviewmaster.com';
 
 // In-memory reference to the running scheduler interval
 let schedulerIntervalId = null;
@@ -32,7 +31,7 @@ const runScrapeExecution = async (config, runByAdminId = null) => {
     // If scheduler-triggered, find super admin for postedBy field
     let adminId = runByAdminId;
     if (!adminId) {
-      const superAdmin = await User.findOne({ email: ADMIN_EMAIL });
+      const superAdmin = await User.findOne({ role: 'super_admin', isActive: true });
       adminId = superAdmin ? superAdmin._id : null;
     }
 

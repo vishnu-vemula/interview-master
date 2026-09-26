@@ -1,11 +1,13 @@
 import type { Request, Response, NextFunction } from 'express';
 import pdf from 'pdf-parse';
 import Resume from '../models/resume.model';
+import Interview from '../models/interview.model';
 import cloudinary from '../config/cloudinary';
 import AppError from '../utils/app-error';
 import { parseResumeAndJD } from '../services/ai.service';
 import { chunkDocument, chunkResumeAndJD, estimateTokens } from '../services/chunking.service';
 import { normalizeText } from '../utils/normalizer';
+import { randomUUID } from 'node:crypto';
 
 
 // ─── POST /api/resumes/upload ─────────────────────────────────────
@@ -14,21 +16,19 @@ export const uploadResume = async (req: Request, res: Response, next: NextFuncti
     return next(new AppError('Please upload a file.', 400));
   }
 
-  const { path: fileUrl, originalname, filename, size, mimetype } = req.file;
+  const { originalname, size, mimetype, buffer } = req.file;
+  if (!buffer || buffer.subarray(0, 5).toString() !== '%PDF-') {
+    return next(new AppError('The uploaded file is not a valid PDF.', 400));
+  }
 
   // Extract text from PDF for AI context
   let extractedText = null;
   let parseStatus = 'pending';
 
   try {
-    if (mimetype === 'application/pdf') {
-      const response = await fetch(fileUrl);
-      const arrayBuffer = await response.arrayBuffer();
-      const buffer = Buffer.from(arrayBuffer);
-      const pdfData = await pdf(buffer);
-      extractedText = pdfData.text?.slice(0, 8000) ?? null; // Limit to 8k chars
-      parseStatus = 'parsed';
-    }
+    const pdfData = await pdf(buffer);
+    extractedText = pdfData.text?.slice(0, 8000) ?? null;
+    parseStatus = extractedText ? 'parsed' : 'failed';
   } catch {
     parseStatus = 'failed';
   }
@@ -45,13 +45,22 @@ export const uploadResume = async (req: Request, res: Response, next: NextFuncti
     }
   }
 
+  const uploaded: any = await new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream({
+      resource_type: 'raw', type: 'authenticated', folder: 'interviewmaster/resumes',
+      public_id: `${req.user._id}-${randomUUID()}`,
+    }, (error: Error | undefined, result: any) => error ? reject(error) : resolve(result));
+    stream.end(buffer);
+  });
+
   const resume = await Resume.create({
     userId: req.user._id,
-    fileName: filename,
+    fileName: uploaded.public_id,
     originalName: originalname,
-    fileUrl,
-    // @ts-expect-error TODO(ts-migration): type this site
-    publicId: req.file.public_id || filename,
+    fileUrl: '',
+    deliveryType: 'authenticated',
+    format: uploaded.format || 'pdf',
+    publicId: uploaded.public_id,
     fileSize: size,
     mimeType: mimetype,
     extractedText,
@@ -68,13 +77,27 @@ export const uploadResume = async (req: Request, res: Response, next: NextFuncti
     await resume.save();
   }
 
-  res.status(201).json({ success: true, resume });
+  const response = resume.toObject();
+  delete response.fileUrl;
+  res.status(201).json({ success: true, resume: response });
 };
 
 // ─── GET /api/resumes ─────────────────────────────────────────────
 export const getMyResumes = async (req: Request, res: Response) => {
-  const resumes = await Resume.find({ userId: req.user._id }).sort('-createdAt');
+  const resumes = await Resume.find({ userId: req.user._id }).select('-fileUrl').sort('-createdAt');
   res.status(200).json({ success: true, count: resumes.length, resumes });
+};
+
+export const downloadResume = async (req: Request, res: Response, next: NextFunction) => {
+  const resume = await Resume.findOne({ _id: req.params.id, userId: req.user._id }).select('publicId format deliveryType');
+  if (!resume) return next(new AppError('Resume not found.', 404));
+  if (resume.deliveryType !== 'authenticated') {
+    return next(new AppError('This legacy resume must be uploaded again to enable private access.', 409));
+  }
+  const url = cloudinary.utils.private_download_url(resume.publicId, resume.format || 'pdf', {
+    resource_type: 'raw', type: 'authenticated', expires_at: Math.floor(Date.now() / 1000) + 60,
+  });
+  res.json({ success: true, url, expiresInSeconds: 60 });
 };
 
 // ─── DELETE /api/resumes/:id ──────────────────────────────────────
@@ -82,11 +105,15 @@ export const deleteResume = async (req: Request, res: Response, next: NextFuncti
   const resume = await Resume.findOne({ _id: req.params.id, userId: req.user._id });
   if (!resume) return next(new AppError('Resume not found.', 404));
 
-  // Delete from Cloudinary
+  if (await Interview.exists({ userId: req.user._id, resumeId: resume._id })) {
+    return next(new AppError('This resume is used by an interview and cannot be deleted.', 409));
+  }
+
   try {
-    await cloudinary.uploader.destroy(resume.publicId, { resource_type: 'raw' });
+    const result = await cloudinary.uploader.destroy(resume.publicId, { resource_type: 'raw', type: resume.deliveryType });
+    if (!['ok', 'not found'].includes(result.result)) throw new Error('Storage deletion failed');
   } catch {
-    // Log but don't fail deletion
+    return next(new AppError('Could not delete the stored resume. Please retry.', 503));
   }
 
   await resume.deleteOne();

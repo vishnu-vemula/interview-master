@@ -11,11 +11,11 @@ import 'express-async-errors';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
-import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
 import compression from 'compression';
-import connectDB from './config/db';
-import logger from './config/logger';
+import mongoose from 'mongoose';
+import { getClient } from './config/redis';
+import { firebaseIsReady } from './services/firebase-identity.service';
 import requestLogger from './middleware/request-logger';
 import errorHandler from './middleware/error-handler';
 // Route Imports
@@ -26,10 +26,8 @@ import interviewRoutes from './routes/interview.routes';
 import sessionRoutes from './routes/session.routes';
 import jobsRoutes from './routes/jobs.routes';
 import adminRoutes from './routes/admin.routes';
+import billingRoutes from './routes/billing.routes';
 const app = express();
-
-// ─── Database ──────────────────────────────────────────────────────
-connectDB();
 
 // ─── Security Headers ─────────────────────────────────────────────
 app.use(helmet());
@@ -69,12 +67,13 @@ app.use(cors({
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Origin', 'Accept'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Origin', 'Accept', 'Idempotency-Key'],
 }));
 
 
 // ─── Rate Limiting ─────────────────────────────────────────────────
 app.use('/api/', rateLimit({
+  skip: (req) => req.path === '/billing/payu/webhook' || req.path === '/billing/payu/return',
   windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000,
   max:      parseInt(process.env.RATE_LIMIT_MAX)        || 100,
   standardHeaders: true,
@@ -83,33 +82,28 @@ app.use('/api/', rateLimit({
 }));
 
 // ─── Body Parsers ──────────────────────────────────────────────────
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(express.json({ limit: '10mb', verify: (req, _res, body) => { (req as any).rawBody = body; } }));
+app.use(express.urlencoded({ extended: false, limit: '10mb', verify: (req, _res, body) => { (req as any).rawBody = body; } }));
 
 // ─── HTTP Request Logging ──────────────────────────────────────────
 // Two layers:
 //  1. requestLogger — structured Winston logs (console + files) for
 //     EVERY request: method, path, status, duration, caller IP and
 //     authenticated user id when present. Levels scale with status.
-//  2. Morgan — human-friendly dev output; in production its output is
-//     streamed into Winston so nothing bypasses the log files.
 app.use(requestLogger);
-
-if (process.env.NODE_ENV !== 'test') {
-  const morganFormat = process.env.NODE_ENV === 'production' ? 'combined' : 'dev';
-  if (process.env.NODE_ENV === 'production') {
-    app.use(morgan(morganFormat, {
-      stream: { write: (msg: string) => logger.http?.(msg.trim()) ?? logger.info(msg.trim()) },
-    }));
-  } else {
-    app.use(morgan(morganFormat));
-  }
-}
 
 // ─── Health Check ──────────────────────────────────────────────────
 app.get('/api/health', (_req, res) =>
   res.status(200).json({ success: true, message: 'OK', timestamp: new Date().toISOString() })
 );
+app.get('/api/ready', async (_req, res) => {
+  const mongo = mongoose.connection.readyState === 1;
+  const redis = process.env.REDIS_ENABLED === 'false' ? process.env.NODE_ENV !== 'production' : Boolean(getClient()?.native.isReady);
+  const payu = Boolean(process.env.PAYU_MERCHANT_KEY && process.env.PAYU_MERCHANT_SALT && ['test', 'production'].includes(process.env.PAYU_ENV || ''));
+  const firebase = await firebaseIsReady();
+  const ready = mongo && redis && payu && firebase;
+  res.status(ready ? 200 : 503).json({ success: ready, services: { mongo, redis, payu, firebase } });
+});
 
 // ─── API Routes ────────────────────────────────────────────────────
 app.use('/api/auth',       authRoutes);
@@ -119,10 +113,11 @@ app.use('/api/interviews', interviewRoutes);
 app.use('/api/sessions',   sessionRoutes);
 app.use('/api/jobs',       jobsRoutes);
 app.use('/api/admin',      adminRoutes);
+app.use('/api/billing',    billingRoutes);
 
 // ─── 404 Catch-all ────────────────────────────────────────────────
 app.use('*', (req, res) =>
-  res.status(404).json({ success: false, message: `Cannot ${req.method} ${req.originalUrl}` })
+  res.status(404).json({ success: false, message: 'Endpoint not found.' })
 );
 
 // ─── Global Error Handler (must be last) ──────────────────────────

@@ -9,7 +9,8 @@ import type { Request, Response, NextFunction } from 'express';
 
 import User from '../models/user.model';
 import Session from '../models/session.model';
-import Transaction from '../models/transaction.model';
+import PaymentOrder from '../models/payment-order.model';
+import Subscription from '../models/subscription.model';
 import Job from '../models/job.model';
 import AppError from '../utils/app-error';
 // Helper to stagger date intervals
@@ -36,7 +37,7 @@ export const getAnalytics = async (req: Request, res: Response) => {
   // 1. General Cohorts Counts
   const [totalCandidates, premiumCandidates, totalJobs, activeSessionsCount, completedSessionsCount] = await Promise.all([
     User.countDocuments({ role: 'candidate' }),
-    User.countDocuments({ role: 'candidate', isPremium: true }),
+    Subscription.distinct('userId', { status: 'active', currentPeriodEnd: { $gt: new Date() } }).then(ids => ids.length),
     Job.countDocuments({ isArchived: false }),
     Session.countDocuments(),
     Session.countDocuments({ status: 'completed' }),
@@ -66,12 +67,12 @@ export const getAnalytics = async (req: Request, res: Response) => {
   ]);
 
   // 3. Subscription Revenue Trend (Daily sum)
-  const revenueTrend = await Transaction.aggregate([
-    { $match: { createdAt: { $gte: start }, status: 'success' } },
+  const revenueTrend = await PaymentOrder.aggregate([
+    { $match: { createdAt: { $gte: start }, status: { $in: ['success', 'refund_pending'] } } },
     {
       $group: {
         _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
-        amount: { $sum: '$amount' },
+        amount: { $sum: { $divide: ['$amountMinor', 100] } },
       }
     },
     { $sort: { _id: 1 } }

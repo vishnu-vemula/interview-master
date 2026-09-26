@@ -83,6 +83,7 @@ import {
 import {
   getAllTransactions,
   refundTransaction,
+  reconcileRefundTransaction,
   getPaymentStats,
   getWebhookLogs,
 } from '../controllers/admin-payment.controller';
@@ -112,37 +113,48 @@ router.get('/auth/me',       protectAdmin, getAdminMe);
 
 // ── Protected admin routes (require admin or super_admin role) ─────
 router.use(protectAdmin);
+router.use('/users', requirePermission('view:users'));
+router.use('/jobs', requirePermission('view:jobs'));
+router.use('/scraper', requirePermission('view:scraper'));
+router.use('/templates', requirePermission('view:templates'));
+router.use('/prompts', requirePermission('view:prompts'));
+router.use('/plans', requirePermission('view:settings'));
+router.use('/payments', requirePermission('view:payments'));
+router.use('/settings', requirePermission('view:settings'));
+router.use('/analytics', requirePermission('view:analytics'));
+router.use('/logs', requirePermission('view:logs'));
+router.use(['/interviews', '/sessions', '/resumes', '/stats'], requirePermission('view:analytics'));
 
 // ── Stats ─────────────────────────────────────────────────────────
 router.get('/stats', getStats);
 
 // ── Users ─────────────────────────────────────────────────────────
 router.get('/users',           getAllUsers);
-router.post('/users/bulk',     bulkUserAction);
+router.post('/users/bulk',     requirePermission('update:users'), bulkUserAction);
 router.get('/users/:id',       getUserById);
-router.patch('/users/:id',     updateUser);
+router.patch('/users/:id',     requirePermission('update:users'), updateUser);
 router.delete('/users/:id',    requireSuperAdmin, deleteUser);   // Super Admin only
 
 // ── Jobs ──────────────────────────────────────────────────────────
 router.get('/jobs',            getAllJobs);
 router.get('/jobs/stats',      getJobStats);
-router.post('/jobs',           createJob);
-router.post('/jobs/bulk',      bulkJobAction);
+router.post('/jobs',           requirePermission('create:jobs'), createJob);
+router.post('/jobs/bulk',      requirePermission('update:jobs'), bulkJobAction);
 router.get('/jobs/:id',        getJobById);
-router.patch('/jobs/:id',      updateJob);
-router.delete('/jobs/:id',     deleteJob);
+router.patch('/jobs/:id',      requirePermission('update:jobs'), updateJob);
+router.delete('/jobs/:id',     requirePermission('delete:jobs'), deleteJob);
 
 // ── Interviews ────────────────────────────────────────────────────
 router.get('/interviews',              getAllInterviews);
-router.delete('/interviews/:id',       deleteInterview);
+router.delete('/interviews/:id',       requireSuperAdmin, deleteInterview);
 
 // ── Sessions ──────────────────────────────────────────────────────
 router.get('/sessions',                getAllSessions);
-router.delete('/sessions/:id',         deleteSession);
+router.delete('/sessions/:id',         requireSuperAdmin, deleteSession);
 
 // ── Resumes ───────────────────────────────────────────────────────
 router.get('/resumes',                 getAllResumes);
-router.delete('/resumes/:id',          deleteResume);
+router.delete('/resumes/:id',          requireSuperAdmin, deleteResume);
 
 // ── Scraper Control ───────────────────────────────────────────────
 router.get('/scraper/status',          getScraperStatus);
@@ -177,6 +189,7 @@ router.delete('/plans/:id',            requirePermission('update:settings'), del
 router.get('/payments/transactions',   getAllTransactions);
 router.get('/payments/stats',          getPaymentStats);
 router.post('/payments/transactions/:id/refund', requirePermission('refund:payments'), refundTransaction);
+router.post('/payments/transactions/:id/reconcile', requirePermission('refund:payments'), reconcileRefundTransaction);
 router.get('/payments/webhooks',       getWebhookLogs);
 
 // ── Settings Control ──────────────────────────────────────────────

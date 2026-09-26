@@ -4,10 +4,10 @@ import Interview from '../../models/interview.model';
 import Session from '../../models/session.model';
 import Resume from '../../models/resume.model';
 import Job from '../../models/job.model';
-import Transaction from '../../models/transaction.model';
+import PaymentOrder from '../../models/payment-order.model';
+import Subscription from '../../models/subscription.model';
 import AuditLog from '../../models/audit-log.model';
 import AppError from '../../utils/app-error';
-export const ADMIN_EMAIL = 'admin@interviewmaster.com';
 export const ADMIN_ROLES = ['admin', 'super_admin'];
 
 
@@ -28,7 +28,7 @@ export const getStats = async (req: Request, res: Response) => {
     jobsCount,
   ] = await Promise.all([
     User.countDocuments({ role: 'candidate' }),
-    User.countDocuments({ role: 'candidate', isPremium: true }),
+    Subscription.distinct('userId', { status: 'active', currentPeriodEnd: { $gt: new Date() } }).then(ids => ids.length),
     Interview.countDocuments(),
     Session.countDocuments(),
     Resume.countDocuments(),
@@ -42,11 +42,11 @@ export const getStats = async (req: Request, res: Response) => {
   const applicationsCount = totalResumes + totalSessions;
 
   // Real aggregate platform revenue
-  const revAgg = await Transaction.aggregate([
-    { $match: { status: 'success' } },
-    { $group: { _id: null, total: { $sum: '$amount' } } }
+  const revAgg = await PaymentOrder.aggregate([
+    { $match: { status: { $in: ['success', 'refund_pending'] } } },
+    { $group: { _id: null, total: { $sum: '$amountMinor' } } }
   ]);
-  const totalRevenue = revAgg[0]?.total || 0;
+  const totalRevenue = (revAgg[0]?.total || 0) / 100;
 
   // Recent registrations (last 7 days)
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
@@ -124,12 +124,12 @@ export const getStats = async (req: Request, res: Response) => {
         }
       }
     ]),
-    Transaction.aggregate([
-      { $match: { createdAt: { $gte: sixMonthsAgo }, status: 'success' } },
+    PaymentOrder.aggregate([
+      { $match: { createdAt: { $gte: sixMonthsAgo }, status: { $in: ['success', 'refund_pending'] } } },
       {
         $group: {
           _id: { $dateToString: { format: '%Y-%m', date: '$createdAt' } },
-          total: { $sum: '$amount' }
+          total: { $sum: { $divide: ['$amountMinor', 100] } }
         }
       }
     ]),

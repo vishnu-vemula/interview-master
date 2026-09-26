@@ -1,209 +1,72 @@
-import type { Request, Response, NextFunction } from 'express';
-/**
- * controllers/adminPayment.controller.js
- *
- * Implements Payment Management Controllers:
- *  - Paginated transactions, failed payments, and webhook logs list feeds.
- *  - Database stats aggregations for revenue charts, sales count, and failed rates.
- *  - Handles Refunds operations (marking database status refunded and logging refundReason).
- *  - Auto-seeds mock transactions for candidates if database is empty.
- */
-
-import Transaction from '../models/transaction.model';
+import type { Request, Response } from 'express';
+import PaymentOrder from '../models/payment-order.model';
 import WebhookLog from '../models/webhook-log.model';
-import User from '../models/user.model';
-import Plan from '../models/plan.model';
-import AppError from '../utils/app-error';
-// ─── Self-Healing Mock Transactions Seeding ───────────────────────
-const seedMockPayments = async () => {
-  const count = await Transaction.countDocuments();
-  if (count > 0) return;
+import { requestRefund, reconcileRefund } from '../services/billing/billing.service';
 
-  const candidates = await User.find({ role: 'candidate' });
-  if (candidates.length === 0) return; // Wait until users exist
-
-  let plans = await Plan.find();
-  if (plans.length === 0) {
-    // create dummy plan
-    const admin = await User.findOne({ role: { $in: ['admin', 'super_admin'] } });
-    if (!admin) return;
-    const p = await Plan.create({
-      name: 'Starter Plan',
-      price: 19.99,
-      durationDays: 30,
-      credits: 20,
-      postedBy: admin._id,
-    });
-    plans = [p];
-  }
-
-  const mockTx = [];
-  const mockWebhooks = [];
-
-  // Generate 5 mock transaction entries
-  for (let i = 0; i < Math.min(candidates.length, 5); i++) {
-    const user = candidates[i];
-    const plan = plans[i % plans.length];
-    
-    mockTx.push({
-      userId: user._id,
-      planId: plan._id,
-      transactionId: `ch_stripe_${Math.random().toString(36).substring(2, 10).toUpperCase()}`,
-      amount: plan.price - plan.directDiscount,
-      currency: 'USD',
-      status: i === 4 ? 'failed' : i === 3 ? 'refunded' : 'success',
-      paymentMethod: 'card',
-      refundReason: i === 3 ? 'Customer requested cancelation.' : null,
-      refundedAt: i === 3 ? new Date() : null,
-      error: i === 4 ? 'Card declined. Insufficient funds.' : null,
-      createdAt: new Date(Date.now() - i * 24 * 60 * 60 * 1000), // staggered days
-    });
-
-    mockWebhooks.push({
-      provider: 'stripe',
-      eventType: i === 4 ? 'charge.failed' : 'charge.succeeded',
-      payload: { id: `evt_${i}`, type: i === 4 ? 'charge.failed' : 'charge.succeeded', amount: plan.price * 100 },
-      status: 'processed',
-    });
-  }
-
-  if (mockTx.length > 0) {
-    await Transaction.insertMany(mockTx);
-    await WebhookLog.insertMany(mockWebhooks);
-  }
+const paging = (req: Request) => {
+  const page = Math.max(1, Number.parseInt(String(req.query.page || 1), 10) || 1);
+  const limit = Math.min(100, Math.max(1, Number.parseInt(String(req.query.limit || 12), 10) || 12));
+  return { page, limit, skip: (page - 1) * limit };
 };
 
-// ─── GET /api/admin/payments/transactions ──────────────────────────
 export const getAllTransactions = async (req: Request, res: Response) => {
-  await seedMockPayments();
-
-  const page  = parseInt(String(req.query.page))  || 1;
-  const limit = parseInt(String(req.query.limit)) || 12;
-  const skip  = (page - 1) * limit;
-  const search = req.query.search || '';
-  const status = req.query.status;
-
-  const filter = {};
-
-  if (status && status !== 'all') {
-    // @ts-expect-error TODO(ts-migration): type this site
-    filter.status = status;
-  }
-
-  // Handle Search: transactionId or populate and match user name/email
-  let userIdsFilter = null;
-  if (search) {
-    // Search candidates by email/name first
-    const users = await User.find({
-      $or: [
-        { name:  { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } }
-      ]
-    }).select('_id');
-    
-    userIdsFilter = users.map(u => u._id);
-    
-    // @ts-expect-error TODO(ts-migration): type this site
-    filter.$or = [
-      { transactionId: { $regex: search, $options: 'i' } },
-      { userId: { $in: userIdsFilter } }
-    ];
-  }
-
-  const [transactions, total] = await Promise.all([
-    Transaction.find(filter)
-      .sort('-createdAt')
-      .skip(skip)
-      .limit(limit)
-      .populate({ path: 'userId', select: 'name email' })
-      .populate({ path: 'planId', select: 'name price' }),
-    Transaction.countDocuments(filter),
+  const { page, limit, skip } = paging(req);
+  const status = String(req.query.status || 'all');
+  const filter: any = {};
+  if (['pending', 'success', 'failed', 'refund_pending', 'refunded'].includes(status)) filter.status = status;
+  if (req.query.search) filter.transactionId = String(req.query.search).slice(0, 80);
+  const [orders, total] = await Promise.all([
+    PaymentOrder.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit)
+      .populate('userId', 'name email').populate('planId', 'name'),
+    PaymentOrder.countDocuments(filter),
   ]);
-
-  res.status(200).json({
-    success: true,
-    data: { transactions, total, page, pages: Math.ceil(total / limit) },
-  });
+  const transactions = orders.map((order: any) => ({
+    _id: order._id, transactionId: order.transactionId, userId: order.userId,
+    planId: order.planId, amount: order.amountMinor / 100, amountMinor: order.amountMinor,
+    currency: order.currency, status: order.status, paymentMethod: 'PayU',
+    createdAt: order.createdAt, refundRequestId: order.refundRequestId,
+  }));
+  res.json({ success: true, data: { transactions, total, page, pages: Math.ceil(total / limit) } });
 };
 
-// ─── POST /api/admin/payments/transactions/:id/refund ──────────────
-export const refundTransaction = async (req: Request, res: Response, next: NextFunction) => {
-  const { reason } = req.body;
-
-  const tx = await Transaction.findById(req.params.id);
-  if (!tx) return next(new AppError('Transaction not found.', 404));
-
-  if (tx.status === 'refunded') {
-    return next(new AppError('Transaction is already refunded.', 400));
+export const refundTransaction = async (req: Request, res: Response) => {
+  try {
+    const order = await requestRefund(String(req.params.id));
+    res.status(202).json({ success: true, message: 'Refund requested from PayU; awaiting confirmation.', order });
+  } catch (error: any) {
+    res.status(400).json({ success: false, message: error.message });
   }
-  if (tx.status === 'failed') {
-    return next(new AppError('Cannot refund a failed payment.', 400));
-  }
-
-  tx.status = 'refunded';
-  tx.refundReason = reason || 'Refund issued by Admin.';
-  tx.refundedAt  = new Date();
-  await tx.save();
-
-  // Deduct candidate premium status or logs if related
-  const user = await User.findById(tx.userId);
-  if (user) {
-    user.isPremium = false;
-    await user.save();
-  }
-
-  res.status(200).json({
-    success: true,
-    message: 'Refund successfully completed and processed. Premium status revoked.',
-    transaction: tx,
-  });
 };
 
-// ─── GET /api/admin/payments/stats ─────────────────────────────────
-export const getPaymentStats = async (req: Request, res: Response) => {
-  // Aggregate Stats
-  const revenueAggregate = await Transaction.aggregate([
-    { $match: { status: 'success' } },
-    { $group: { _id: null, total: { $sum: '$amount' } } },
-  ]);
-  const totalRevenue = revenueAggregate[0]?.total || 0;
-
-  const successfulSales = await Transaction.countDocuments({ status: 'success' });
-  const refundedSales   = await Transaction.countDocuments({ status: 'refunded' });
-  const failedSales     = await Transaction.countDocuments({ status: 'failed' });
-
-  // Get total refunded sum
-  const refundAggregate = await Transaction.aggregate([
-    { $match: { status: 'refunded' } },
-    { $group: { _id: null, total: { $sum: '$amount' } } },
-  ]);
-  const totalRefunded = refundAggregate[0]?.total || 0;
-
-  res.status(200).json({
-    success: true,
-    data: {
-      totalRevenue,
-      successfulSales,
-      refundedSales,
-      failedSales,
-      totalRefunded,
-    },
-  });
+export const reconcileRefundTransaction = async (req: Request, res: Response) => {
+  try {
+    const order = await reconcileRefund(String(req.params.id));
+    res.json({ success: true, order });
+  } catch (error: any) {
+    res.status(400).json({ success: false, message: error.message });
+  }
 };
 
-// ─── GET /api/admin/payments/webhooks ──────────────────────────────
+export const getPaymentStats = async (_req: Request, res: Response) => {
+  const [success, refunded, failed] = await Promise.all([
+    PaymentOrder.aggregate([{ $match: { status: { $in: ['success', 'refund_pending'] } } },
+      { $group: { _id: null, count: { $sum: 1 }, amount: { $sum: '$amountMinor' } } }]),
+    PaymentOrder.aggregate([{ $match: { status: 'refunded' } },
+      { $group: { _id: null, count: { $sum: 1 }, amount: { $sum: '$amountMinor' } } }]),
+    PaymentOrder.countDocuments({ status: 'failed' }),
+  ]);
+  res.json({ success: true, data: {
+    currency: 'INR', totalRevenue: (success[0]?.amount || 0) / 100,
+    successfulSales: success[0]?.count || 0, refundedSales: refunded[0]?.count || 0,
+    totalRefunded: (refunded[0]?.amount || 0) / 100, failedSales: failed,
+  } });
+};
+
 export const getWebhookLogs = async (req: Request, res: Response) => {
-  const page  = parseInt(String(req.query.page))  || 1;
-  const limit = parseInt(String(req.query.limit)) || 12;
-  const skip  = (page - 1) * limit;
-
+  const { page, limit, skip } = paging(req);
   const [logs, total] = await Promise.all([
-    WebhookLog.find().sort('-createdAt').skip(skip).limit(limit),
-    WebhookLog.countDocuments(),
+    WebhookLog.find({ provider: 'payu' }).sort({ createdAt: -1 }).skip(skip).limit(limit),
+    WebhookLog.countDocuments({ provider: 'payu' }),
   ]);
-
-  res.status(200).json({
-    success: true,
-    data: { logs, total, page, pages: Math.ceil(total / limit) },
-  });
+  res.json({ success: true, data: { logs, total, page, pages: Math.ceil(total / limit) } });
 };

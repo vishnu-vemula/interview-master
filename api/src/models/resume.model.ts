@@ -17,8 +17,10 @@ const resumeSchema = new mongoose.Schema(
     },
     fileUrl: {
       type: String,
-      required: true,
+      default: '',
     },
+    deliveryType: { type: String, enum: ['upload', 'authenticated'], default: 'upload' },
+    format: { type: String, default: 'pdf' },
     publicId: {
       type: String, // Cloudinary public_id for deletion
       required: true,

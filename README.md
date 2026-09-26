@@ -1,5 +1,7 @@
 # 🎯 InterviewMaster
 
+> **Current implementation status:** PayU India hosted checkout, confirmed fulfillment, refund reconciliation, private PDF uploads and interview allowances run on the existing MongoDB application. Firebase Auth is available as an opt-in bridge and is tested with the local emulator. The Prisma migration has been applied and tested on PostgreSQL, but **the running application has not cut over to PostgreSQL**. Paid plans are one-time passes, and external PayU sandbox and AI/storage journeys remain unverified. See [implementation status](docs/IMPLEMENTATION_STATUS.md), [PayU setup](docs/PAYU.md), [schema](docs/POSTGRESQL_SCHEMA.md) and [user migration](docs/USER_MIGRATION.md) before deployment.
+
 <div align="center">
 
 ![InterviewMaster Banner](https://img.shields.io/badge/Interview-Master-419683?style=for-the-badge&logo=target&logoColor=white)
@@ -40,7 +42,7 @@
 | 📊 Answer scoring | Per-answer evaluation + final report via Groq LLM |
 | 📈 Dashboard | Session history, score trends, performance analytics |
 | 💼 Job Board | Live listings from the Adzuna API with match scoring |
-| 🔐 Auth | JWT access + refresh tokens, role-based access control |
+| 🔐 Auth | Firebase Auth bridge or legacy JWT mode; server-side role checks |
 | ☁️ Cloud storage | Resumes stored on Cloudinary |
 | ⚡ Redis cache | Multi-level caching for job searches |
 | 📝 Admin panel | Users, content, prompts, scraper and analytics management |
@@ -58,14 +60,14 @@
 - **Real-time**: Socket.io
 - **File storage**: Cloudinary + Multer
 - **Cache**: Redis (official client, compat wrapper)
-- **Auth**: JWT (jsonwebtoken + bcryptjs), RBAC middleware
+- **Auth**: Firebase Admin SDK bridge and legacy JWT mode, RBAC middleware
 - **Security**: Helmet, CORS, express-rate-limit, compression
-- **Logging**: Winston + Morgan (streamed through Winston in production)
+- **Logging**: Winston request logging with query strings omitted
 
 ### Web (`/frontend`)
 - **Framework**: React 18 + Vite
 - **State**: Zustand + TanStack React Query
-- **Routing**: React Router v6
+- **Routing**: React Router v7
 - **UI / animation**: Framer Motion, Lucide React
 - **Styling**: Tailwind CSS (single-accent teal design system)
 - **Forms**: React Hook Form

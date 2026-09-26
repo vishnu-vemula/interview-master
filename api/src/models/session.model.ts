@@ -11,6 +11,7 @@ const answerSchema = new mongoose.Schema({
   aiFeedback: { type: String, default: null },
   aiScore: { type: Number, min: 0, max: 10, default: null },
   skipped: { type: Boolean, default: false },
+  followupUsed: { type: Boolean, default: false },
 });
 
 const sessionSchema = new mongoose.Schema(
@@ -29,7 +30,7 @@ const sessionSchema = new mongoose.Schema(
     answers: [answerSchema],
     status: {
       type: String,
-      enum: ['started', 'in_progress', 'completed', 'abandoned'],
+      enum: ['started', 'in_progress', 'evaluating', 'evaluation_failed', 'completed', 'abandoned'],
       default: 'started',
     },
     startedAt: {
@@ -40,6 +41,7 @@ const sessionSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    evaluationStartedAt: { type: Date, default: null },
     totalTimeTaken: {
       type: Number,
       default: 0, // in seconds
@@ -60,6 +62,11 @@ const sessionSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+sessionSchema.index({ userId: 1, interviewId: 1 }, {
+  unique: true,
+  partialFilterExpression: { status: { $in: ['started', 'in_progress', 'evaluating', 'evaluation_failed'] } },
+});
 
 // Auto-calculate overall score from individual answers
 sessionSchema.methods.calculateOverallScore = function () {

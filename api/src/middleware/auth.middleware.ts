@@ -2,6 +2,7 @@ import type { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import User from '../models/user.model';
 import AppError from '../utils/app-error';
+import { firebaseMode, resolveFirebaseUser } from '../services/firebase-identity.service';
 // ─── Protect Route (verify access token) ──────────────────────────
 export const protect = async (req: Request, res: Response, next: NextFunction) => {
   let token;
@@ -15,6 +16,11 @@ export const protect = async (req: Request, res: Response, next: NextFunction) =
   }
 
   try {
+    if (firebaseMode()) {
+      const { user } = await resolveFirebaseUser(token);
+      req.user = user;
+      return next();
+    }
     const decoded: any = jwt.verify(token, process.env.JWT_SECRET);
 
     const user = await User.findById(decoded.id).select('+passwordChangedAt');
@@ -39,6 +45,7 @@ export const protect = async (req: Request, res: Response, next: NextFunction) =
     req.user = user;
     next();
   } catch (err) {
+    if (firebaseMode()) return next(err instanceof AppError ? err : new AppError('Invalid or revoked identity token.', 401));
     // @ts-expect-error TODO(ts-migration): type this site
     if (err.name === 'JsonWebTokenError') {
       return next(new AppError('Invalid token. Please log in again.', 401));

@@ -17,7 +17,8 @@ import type { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import User from '../models/user.model';
 import AppError from '../utils/app-error';
-const ADMIN_ROLES = ['admin', 'super_admin'];
+import { firebaseMode, resolveFirebaseUser } from '../services/firebase-identity.service';
+const ADMIN_ROLES = ['support', 'content_manager', 'admin', 'super_admin'];
 
 // ─── protectAdmin ─────────────────────────────────────────────────
 // Verifies the Bearer token and confirms the user holds an admin role.
@@ -35,6 +36,13 @@ export const protectAdmin = async (req: Request, res: Response, next: NextFuncti
   }
 
   try {
+    if (firebaseMode()) {
+      const { user } = await resolveFirebaseUser(token);
+      if (!ADMIN_ROLES.includes(user.role)) return next(new AppError('Admin privileges required.', 403));
+      req.admin = user;
+      req.user = user;
+      return next();
+    }
     const decoded: any = jwt.verify(token, process.env.JWT_SECRET);
 
     const user = await User.findById(decoded.id).select('+passwordChangedAt');
@@ -68,6 +76,7 @@ export const protectAdmin = async (req: Request, res: Response, next: NextFuncti
     next();
 
   } catch (err) {
+    if (firebaseMode()) return next(err instanceof AppError ? err : new AppError('Invalid or revoked identity token.', 401));
     // @ts-expect-error TODO(ts-migration): type this site
     if (err.name === 'JsonWebTokenError')  return next(new AppError('Invalid admin token.', 401));
     // @ts-expect-error TODO(ts-migration): type this site

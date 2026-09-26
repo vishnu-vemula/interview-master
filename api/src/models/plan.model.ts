@@ -37,6 +37,9 @@ const planSchema = new mongoose.Schema(
       required: [true, 'Price is required'],
       min: [0, 'Price cannot be negative'],
     },
+    code: { type: String, unique: true, sparse: true, uppercase: true, trim: true },
+    amountMinor: { type: Number, min: 0 },
+    currency: { type: String, default: 'INR', enum: ['INR'] },
     durationDays: {
       type: Number,
       required: [true, 'Duration in days is required'],

@@ -9,6 +9,7 @@ import type { Request, Response, NextFunction } from 'express';
 
 import Plan from '../models/plan.model';
 import User from '../models/user.model';
+import Subscription from '../models/subscription.model';
 import AppError from '../utils/app-error';
 // ─── POST /api/admin/plans ─────────────────────────────────────────
 export const createPlan = async (req: Request, res: Response, next: NextFunction) => {
@@ -17,8 +18,16 @@ export const createPlan = async (req: Request, res: Response, next: NextFunction
   if (!name || price === undefined || durationDays === undefined || credits === undefined) {
     return next(new AppError('Plan name, price, duration, and credits are required.', 400));
   }
+  const amountMinor = Math.round((Number(price) - Number(directDiscount || 0)) * 100);
+  if (!Number.isSafeInteger(amountMinor) || amountMinor < 100 || !Number.isInteger(Number(durationDays)) || Number(durationDays) < 1 ||
+    !Number.isInteger(Number(credits)) || Number(credits) < 1) {
+    return next(new AppError('Plan price, duration or allowance is invalid.', 400));
+  }
 
   const plan = await Plan.create({
+    code: String(req.body.code || name).toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_|_$/g, ''),
+    amountMinor,
+    currency: 'INR',
     name: name.trim(),
     price: parseFloat(price) || 0,
     durationDays: parseInt(durationDays) || 30,
@@ -66,7 +75,7 @@ export const getAllPlans = async (req: Request, res: Response) => {
 export const getPlanStats = async (req: Request, res: Response) => {
   const totalPlans      = await Plan.countDocuments({ isArchived: false });
   const activePlans     = await Plan.countDocuments({ isPublished: true, isArchived: false });
-  const premiumUsers    = await User.countDocuments({ isPremium: true, role: 'candidate' });
+  const premiumUsers    = (await Subscription.distinct('userId', { status: 'active', currentPeriodEnd: { $gt: new Date() } })).length;
 
   // Get total credits in pool
   const creditsAggregate = await User.aggregate([
@@ -100,24 +109,20 @@ export const updatePlan = async (req: Request, res: Response, next: NextFunction
   const plan = await Plan.findById(req.params.id);
   if (!plan) return next(new AppError('Plan not found.', 404));
 
-  const allowedFields = {};
-    // @ts-expect-error TODO(ts-migration): type this site
+  const allowedFields: any = {};
   if (name !== undefined)           allowedFields.name           = name.trim();
-    // @ts-expect-error TODO(ts-migration): type this site
   if (price !== undefined)          allowedFields.price          = parseFloat(price) || 0;
-    // @ts-expect-error TODO(ts-migration): type this site
   if (durationDays !== undefined)   allowedFields.durationDays   = parseInt(durationDays) || 30;
-    // @ts-expect-error TODO(ts-migration): type this site
   if (credits !== undefined)        allowedFields.credits        = parseInt(credits) || 0;
-    // @ts-expect-error TODO(ts-migration): type this site
+  if (price !== undefined || directDiscount !== undefined) {
+    const amountMinor = Math.round((Number(price ?? plan.price) - Number(directDiscount ?? plan.directDiscount)) * 100);
+    if (!Number.isSafeInteger(amountMinor) || amountMinor < 100) return next(new AppError('Discounted price must be at least ₹1.', 400));
+    allowedFields.amountMinor = amountMinor;
+  }
   if (features !== undefined)       allowedFields.features       = Array.isArray(features) ? features : [];
-    // @ts-expect-error TODO(ts-migration): type this site
   if (coupons !== undefined)        allowedFields.coupons        = Array.isArray(coupons) ? coupons : [];
-    // @ts-expect-error TODO(ts-migration): type this site
   if (directDiscount !== undefined) allowedFields.directDiscount = parseFloat(directDiscount) || 0;
-    // @ts-expect-error TODO(ts-migration): type this site
   if (isPublished !== undefined)    allowedFields.isPublished    = isPublished;
-    // @ts-expect-error TODO(ts-migration): type this site
   if (isArchived !== undefined)     allowedFields.isArchived     = isArchived;
 
   const updated = await Plan.findByIdAndUpdate(req.params.id, allowedFields, {

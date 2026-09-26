@@ -14,7 +14,6 @@ import type { Request, Response, NextFunction } from 'express';
 import adzunaService from '../services/adzuna.service';
 import Resume from '../models/resume.model';
 import { matchUserToJobs } from '../services/job-match-service';
-import { generateQuestionsDirect } from '../services/ai.service';
     // @ts-expect-error TODO(ts-migration): type this site
 import jobSearchService from '../services/job-search-service';
 import {
@@ -173,19 +172,6 @@ const getRecommendedJobs = async (req: Request, res: Response) => {
   });
 };
 
-const generateQuestionsFromDesc = async (req: Request, res: Response, next: NextFunction) => {
-  const { jobTitle, jobDescription } = req.body;
-  try {
-    const questions = await generateQuestionsDirect(jobTitle, jobDescription);
-    res.status(200).json({
-      success: true,
-      questions,
-    });
-  } catch (err) {
-    next(err);
-  }
-};
-
 import { getFilteredJobs } from '../services/postgres-job-service';
 
 const getActiveJobsList = async (req: Request, res: Response, next: NextFunction) => {
@@ -201,4 +187,4 @@ const getActiveJobsList = async (req: Request, res: Response, next: NextFunction
   }
 };
 
-export { searchJobs, getJobById, getCategories, getRecommendedJobs, generateQuestionsFromDesc, getActiveJobsList };
+export { searchJobs, getJobById, getCategories, getRecommendedJobs, getActiveJobsList };

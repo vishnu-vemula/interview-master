@@ -9,7 +9,7 @@ const connectDB = async () => {
   } catch (error) {
     // @ts-expect-error TODO(ts-migration): type this site
     logger.error(`❌ MongoDB connection error: ${error.message}`);
-    logger.warn('⚠️ Server continuing without MongoDB. Some features will be disabled.');
+    throw error;
   }
 };
 

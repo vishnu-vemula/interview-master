@@ -31,7 +31,7 @@ const requestLogger = (req: Request, res: Response, next: NextFunction): void =>
       : 'info';
 
     logger[level](
-      `${req.method} ${req.originalUrl} ${res.statusCode} ${durationMs}ms ip=${req.ip ?? 'unknown'} user=${userId}`
+      `${req.method} ${req.path} ${res.statusCode} ${durationMs}ms user=${userId}`
     );
   });
 

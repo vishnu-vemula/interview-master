@@ -10,19 +10,20 @@ const webhookLogSchema = new mongoose.Schema(
     provider: {
       type: String,
       required: true,
-      enum: ['stripe', 'razorpay'],
+      enum: ['payu'],
     },
     eventType: {
       type: String,
       required: true,
     },
+    eventId: { type: String, unique: true, sparse: true },
     payload: {
       type: mongoose.Schema.Types.Mixed,
       required: true,
     },
     status: {
       type: String,
-      enum: ['processed', 'failed'],
+      enum: ['processed', 'failed', 'ignored'],
       default: 'processed',
     },
     error: {

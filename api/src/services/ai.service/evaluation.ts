@@ -4,6 +4,9 @@ import logger from '../../config/logger';
 import { extractContextViaRAG, buildSemanticChunks, createAndStoreEmbeddings, retrieveContextForTopic } from '../rag.service';
 import { optimizeQuery } from '../optimizer.service';
 import SystemPrompt from '../../models/system-prompt.model';
+const templateWith = (template: string, fallback: string, placeholders: string[]) =>
+  placeholders.every((key) => template.includes('${' + key + '}')) ? template : fallback;
+
 export const evaluateAnswer = async ({ questionText, answerText, expectedKeywords, jobTitle }) => {
   const defaultPrompt = `Act as an interviewer evaluating a candidate's response.
 
@@ -23,7 +26,9 @@ Return valid JSON exactly in this format:
   "feedback": "<constructive feedback string explaining the evaluation based on correctness, clarity, and depth>"
 }`;
 
-  const rawTemplate = await getActivePrompt('ats_scorer', defaultPrompt);
+  // The seeded 'ats_scorer' prompt is a resume-vs-JD scorer without these placeholders;
+  // only use a stored template that can actually carry the question and answer.
+  const rawTemplate = templateWith(await getActivePrompt('ats_scorer', defaultPrompt), defaultPrompt, ['questionText', 'answerText']);
   const prompt      = formatPrompt(rawTemplate, {
     jobTitle,
     questionText,
@@ -37,10 +42,15 @@ Return valid JSON exactly in this format:
     temperature: 0.4,
     max_tokens: 512,
     response_format: { type: 'json_object' },
-  });
+  }, { signal: AbortSignal.timeout(45_000), maxRetries: 1 });
 
   const content = response.choices[0]?.message?.content;
-  return JSON.parse(content || '{}');
+  const result = JSON.parse(content || '{}');
+  if (!Number.isFinite(result.score) || result.score < 0 || result.score > 10 ||
+    typeof result.feedback !== 'string' || !result.feedback.trim() || result.feedback.length > 3000) {
+    throw new Error('AI returned malformed answer feedback.');
+  }
+  return result;
 };
 
 /**
@@ -66,7 +76,7 @@ Respond with valid JSON exacty in this format:
   "improvementTips": ["<point 1>", "<point 2>"]
 }`;
 
-  const rawTemplate = await getActivePrompt('feedback_report', defaultPrompt);
+  const rawTemplate = templateWith(await getActivePrompt('feedback_report', defaultPrompt), defaultPrompt, ['summary']);
   const prompt      = formatPrompt(rawTemplate, { jobTitle, summary });
 
   const response = await groq.chat.completions.create({
@@ -75,10 +85,17 @@ Respond with valid JSON exacty in this format:
     temperature: 0.5,
     max_tokens: 1024,
     response_format: { type: 'json_object' },
-  });
+  }, { signal: AbortSignal.timeout(45_000), maxRetries: 1 });
 
   const content = response.choices[0]?.message?.content;
-  return JSON.parse(content || '{}');
+  const result = JSON.parse(content || '{}');
+  const validList = (value: unknown) => Array.isArray(value) && value.length <= 20 &&
+    value.every(item => typeof item === 'string' && item.trim().length > 0 && item.length <= 500);
+  if (!Number.isFinite(result.overallScore) || result.overallScore < 0 || result.overallScore > 100 ||
+    !validList(result.strengths) || !validList(result.weaknesses) || !validList(result.improvementTips)) {
+    throw new Error('AI returned malformed overall feedback.');
+  }
+  return result;
 };
 
 /**

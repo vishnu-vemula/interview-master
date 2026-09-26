@@ -17,9 +17,10 @@ const userSchema = new mongoose.Schema(
       trim: true,
       match: [/^\S+@\S+\.\S+$/, 'Please enter a valid email'],
     },
+    firebaseUid: { type: String, unique: true, sparse: true, select: false },
     password: {
       type: String,
-      required: [true, 'Password is required'],
+      required: function (this: any) { return !this.firebaseUid; },
       minlength: [8, 'Password must be at least 8 characters'],
       select: false,
     },
@@ -57,6 +58,7 @@ const userSchema = new mongoose.Schema(
       default: 0,
     },
     passwordChangedAt: Date,
+    deletedAt: { type: Date, default: null },
     refreshToken: {
       type: String,
       select: false,
@@ -84,13 +86,14 @@ userSchema.virtual('sessions', {
 
 // ─── Pre-save Hook: Hash Password ─────────────────────────────────
 userSchema.pre('save', async function (next) {
-  if (!this.isModified('password')) return next();
+  if (!this.isModified('password') || !this.password) return next();
   this.password = await bcrypt.hash(this.password, 12);
   next();
 });
 
 // ─── Methods ──────────────────────────────────────────────────────
 userSchema.methods.comparePassword = async function (candidatePassword) {
+  if (!this.password || typeof candidatePassword !== 'string') return false;
   return bcrypt.compare(candidatePassword, this.password);
 };
 

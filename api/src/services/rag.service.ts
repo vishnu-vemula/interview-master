@@ -2,6 +2,7 @@ import { OpenAIEmbeddings } from '@langchain/openai';
 import { chunkResumeAndJD } from './chunking.service';
 import { normalizeChunks } from '../utils/normalizer';
 import { optimizeQuery } from './optimizer.service';
+import logger from '../config/logger';
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Cosine Similarity (pure Node.js – no native FAISS needed on Windows)
@@ -133,7 +134,7 @@ const extractContextViaRAG = async (resumeText, jobDescription) => {
 
     return retrievedContext;
   } catch (error) {
-    console.error('RAG Pipeline Error:', error);
+    logger.warn('RAG embedding unavailable; using bounded text context');
     // Graceful fallback if OpenAI key is missing or embedding fails
     return `Fallback Context:\nJD: ${(jobDescription || '').slice(0, 1000)}\nResume: ${(resumeText || '').slice(0, 1000)}`;
   }
