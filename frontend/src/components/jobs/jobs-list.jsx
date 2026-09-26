@@ -1,89 +1,52 @@
-import React, { memo } from 'react';
-import JobCard from './job-card';
-import Pagination from './pagination';
+import { memo } from 'react';
 import { Inbox } from 'lucide-react';
+import { EmptyState, Pagination, Skeleton } from '@/components/ui';
+import { cn } from '@/utils';
+import JobCard from './job-card';
 
-// ─── Skeleton Loader Component ─────────────────────────────────────────────
-const JobSkeleton = () => (
-  <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 h-full flex flex-col animate-pulse">
-    <div className="h-6 bg-slate-200 dark:bg-slate-700 rounded w-3/4 mb-3"></div>
-    <div className="h-4 bg-slate-200 dark:bg-slate-700 rounded w-1/3 mb-6"></div>
-    
-    <div className="flex gap-3 mb-6">
-      <div className="h-6 bg-slate-200 dark:bg-slate-700 rounded w-20"></div>
-      <div className="h-6 bg-slate-200 dark:bg-slate-700 rounded w-24"></div>
+function JobSkeleton() {
+  return (
+    <div className="card flex h-full flex-col p-5" aria-hidden="true">
+      <Skeleton className="h-5 w-3/4" />
+      <Skeleton className="mt-2 h-4 w-1/3" />
+      <div className="mt-4 flex gap-2"><Skeleton className="h-6 w-20 rounded-full" /><Skeleton className="h-6 w-24 rounded-full" /></div>
+      <Skeleton className="mt-4 h-4 w-full" />
+      <Skeleton className="mt-2 h-4 w-5/6" />
+      <Skeleton className="mt-6 h-8 w-full" />
     </div>
-    
-    <div className="space-y-2 mb-6 flex-grow">
-      <div className="h-4 bg-slate-200 dark:bg-slate-700 rounded w-full"></div>
-      <div className="h-4 bg-slate-200 dark:bg-slate-700 rounded w-5/6"></div>
-    </div>
-    
-    <div className="mt-auto pt-4 border-t border-slate-100 dark:border-slate-800">
-      <div className="h-10 bg-slate-200 dark:bg-slate-700 rounded-xl w-full"></div>
-    </div>
-  </div>
-);
+  );
+}
 
-// ─── Main JobsList Component (Memoized) ────────────────────────────────────
-const JobsList = memo(({ jobs = [], loading = false, page, totalPages, onPageChange, onSelectJob, searchQuery = '' }) => {
-  
-  // 1. Initial Loading State (Skeleton Loaders) - ONLY show if no jobs are present
+const JobsList = memo(function JobsList({ jobs = [], loading = false, page, totalPages, onPageChange, onSelectJob, searchQuery = '', onClearFilters }) {
   if (loading && jobs.length === 0) {
     return (
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
-        {[...Array(6)].map((_, i) => (
-          <JobSkeleton key={i} />
-        ))}
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2" role="status" aria-label="Loading jobs">
+        {Array.from({ length: 6 }).map((_, i) => <JobSkeleton key={i} />)}
       </div>
     );
   }
 
-  // 2. Empty State
   if (!loading && jobs.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center py-20 text-slate-500 bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm">
-        <div className="w-20 h-20 bg-slate-50 dark:bg-slate-800 rounded-full flex items-center justify-center mb-4">
-          <Inbox className="w-10 h-10 text-slate-400" />
-        </div>
-        <h3 className="text-xl font-bold text-slate-800 dark:text-slate-200 mb-2">No jobs found</h3>
-        <p className="text-sm">Try adjusting your search criteria or filters.</p>
-      </div>
+      <EmptyState
+        icon={Inbox}
+        title="No jobs match"
+        description="Try a broader keyword, a different location or fewer filters."
+        action={onClearFilters && <button type="button" className="btn btn-soft btn-sm" onClick={onClearFilters}>Clear search & filters</button>}
+      />
     );
   }
 
-  // 3. Render Jobs Grid
   return (
-    <div className="w-full relative">
-      
-      {/* 
-        REMOVED soft loading overlay spinner as per UX Enhancements requirement.
-        Because we use keepPreviousData, the jobs will naturally stay visible, 
-        and the loading state is conveyed by the disabled/spinning search button.
-      */}
-      <div className={`grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8 transition-opacity duration-300 ${loading ? 'opacity-60 grayscale-[0.2]' : 'opacity-100'}`}>
+    <div className="space-y-8">
+      <div className={cn('grid grid-cols-1 gap-3 transition-opacity md:grid-cols-2', loading && 'opacity-60')} aria-busy={loading}>
         {jobs.map((job, idx) => (
-          <JobCard 
-            key={job.id || idx} 
-            job={job} 
-            onClick={() => onSelectJob && onSelectJob(job)}
-            searchQuery={searchQuery}
-          />
+          <JobCard key={job.id || idx} job={job} onClick={() => onSelectJob?.(job)} searchQuery={searchQuery} />
         ))}
       </div>
-
-      {/* Embedded Pagination */}
-      {totalPages > 1 && (
-        <Pagination 
-          page={page} 
-          totalPages={totalPages} 
-          onPageChange={onPageChange} 
-        />
-      )}
+      <Pagination page={page} totalPages={totalPages} onPageChange={onPageChange} disabled={loading} />
     </div>
   );
 });
-
-JobsList.displayName = 'JobsList';
 
 export default JobsList;

@@ -1,175 +1,205 @@
-import { useState, useEffect, useCallback } from 'react';
-import { Trash2, ChevronLeft, ChevronRight, MessageSquare } from 'lucide-react';
-import { getAdminSessions, deleteAdminSession } from '@/services/admin.service';
+/**
+ * AdminSessionsPage — every mock-interview practice session across the platform
+ * (GET /admin/sessions), paginated, with super-admin delete (DELETE /admin/sessions/:id).
+ */
+
+import { useEffect, useState } from 'react';
+import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
+import { MessageSquare, RefreshCw, Trash2 } from 'lucide-react';
+import { getAdminSessions, deleteAdminSession } from '@/services/admin.service';
+import { useAdminAuth } from '@/context';
+import {
+  Avatar, Button, EmptyState, ErrorState, PageHeader, Pagination, Pill, ScorePill, Skeleton, TableShell, useConfirm,
+} from '@/components/ui';
+import { cn, formatDate, getErrorMessage, timeAgo } from '@/utils';
 
-function ConfirmModal({ message, onConfirm, onClose }) {
-  const [loading, setLoading] = useState(false);
-  return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-      <div className="bg-[#14142a] border border-white/10 rounded-2xl p-6 w-full max-w-sm shadow-2xl">
-        <h3 className="text-white font-semibold mb-2">Delete Session?</h3>
-        <p className="text-slate-400 text-sm mb-5">{message}</p>
-        <div className="flex gap-3">
-          <button
-            className="btn-danger flex-1"
-            disabled={loading}
-            onClick={async () => { setLoading(true); await onConfirm(); setLoading(false); }}
-          >
-            {loading ? 'Deleting…' : 'Delete'}
-          </button>
-          <button className="btn-secondary flex-1" onClick={onClose}>Cancel</button>
-        </div>
-      </div>
-    </div>
-  );
-}
+const PAGE_SIZE = 15;
 
-function ScoreBadge({ score }) {
-  if (score === null || score === undefined) return <span className="text-slate-500">—</span>;
-  const color =
-    score >= 80 ? 'text-emerald-400' :
-    score >= 60 ? 'text-amber-400' :
-    'text-red-400';
-  return <span className={`font-bold ${color}`}>{score}%</span>;
-}
-
-const STATUS_COLORS = {
-  started:     'badge-brand',
-  in_progress: 'badge-warning',
-  completed:   'badge-success',
-  abandoned:   'badge-danger',
+const STATUS = {
+  started: { tone: 'blue', label: 'Started' },
+  in_progress: { tone: 'blue', label: 'In progress' },
+  evaluating: { tone: 'stone', label: 'Evaluating' },
+  evaluation_failed: { tone: 'coral', label: 'Evaluation failed' },
+  completed: { tone: 'ok', label: 'Completed' },
+  abandoned: { tone: 'stone', label: 'Abandoned' },
 };
 
 export default function AdminSessionsPage() {
-  const [data, setData]       = useState({ sessions: [], total: 0, pages: 1 });
-  const [loading, setLoading] = useState(true);
-  const [page, setPage]       = useState(1);
-  const [delItem, setDelItem] = useState(null);
+  const confirm = useConfirm();
+  const queryClient = useQueryClient();
+  const { isSuperAdmin } = useAdminAuth();
+  const [page, setPage] = useState(1);
+  const [deletingId, setDeletingId] = useState(null);
 
-  const fetchSessions = useCallback(async () => {
-    setLoading(true);
+  const { data, isLoading, isFetching, isPlaceholderData, isError, error, refetch } = useQuery({
+    queryKey: ['admin-sessions', { page, limit: PAGE_SIZE }],
+    queryFn: () => getAdminSessions({ page, limit: PAGE_SIZE }),
+    placeholderData: keepPreviousData,
+  });
+
+  const sessions = data?.sessions ?? [];
+  const total = data?.total ?? 0;
+  const totalPages = data?.pages ?? 0;
+
+  // After a delete empties the last page, step back.
+  useEffect(() => {
+    if (data && data.pages > 0 && page > data.pages) setPage(data.pages);
+  }, [data, page]);
+
+  const handleDelete = async (s) => {
+    const who = s.userId?.name ? ` by ${s.userId.name}` : '';
+    const what = s.interviewId?.jobTitle ? ` for “${s.interviewId.jobTitle}”` : '';
+    const ok = await confirm({
+      title: 'Delete this session?',
+      description: `The practice session${what}${who} and all of its answers and feedback will be permanently deleted. This can’t be undone.`,
+      confirmLabel: 'Delete session',
+      tone: 'danger',
+    });
+    if (!ok) return;
+    setDeletingId(s._id);
     try {
-      const d = await getAdminSessions({ page, limit: 15 });
-      setData(d);
-    } catch { toast.error('Failed to load sessions'); }
-    finally { setLoading(false); }
-  }, [page]);
-
-  useEffect(() => { fetchSessions(); }, [fetchSessions]);
-
-  const handleDelete = async (id) => {
-    try {
-      await deleteAdminSession(id);
-      toast.success('Session deleted');
-      setDelItem(null);
-      fetchSessions();
-    } catch { toast.error('Delete failed'); }
+      await deleteAdminSession(s._id);
+      toast.success('Session deleted.');
+      queryClient.invalidateQueries({ queryKey: ['admin-sessions'] });
+    } catch (err) {
+      toast.error(getErrorMessage(err, 'Couldn’t delete this session.'));
+    } finally {
+      setDeletingId(null);
+    }
   };
 
-  return (
-    <div className="space-y-5 max-w-7xl mx-auto">
-      <div>
-        <h1 className="text-2xl font-bold text-white">All Sessions</h1>
-        <p className="text-slate-400 text-sm mt-1">{data.total} sessions across all users</p>
-      </div>
+  const from = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
+  const to = Math.min(page * PAGE_SIZE, total);
 
-      <div className="card overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+  return (
+    <div className="space-y-8">
+      <PageHeader
+        eyebrow="Admin · Sessions"
+        title="Practice sessions"
+        description={
+          isLoading || total === 0
+            ? 'Every mock interview session across all candidates, newest first.'
+            : `${total} mock interview ${total === 1 ? 'session' : 'sessions'} across all candidates, newest first.`
+        }
+        actions={
+          <Button variant="soft" icon={RefreshCw} onClick={() => refetch()} loading={isFetching && !isLoading}>
+            Refresh
+          </Button>
+        }
+      />
+
+      {isError ? (
+        <ErrorState
+          title="Couldn’t load sessions"
+          description={getErrorMessage(error, 'The sessions service did not respond.')}
+          onRetry={refetch}
+        />
+      ) : !isLoading && sessions.length === 0 ? (
+        <EmptyState
+          icon={MessageSquare}
+          title="No practice sessions yet"
+          description="Sessions appear here once candidates start a mock interview."
+        />
+      ) : (
+        <div className="space-y-5">
+          <TableShell minWidth={900} className={cn(isFetching && isPlaceholderData && 'opacity-60 transition-opacity')}>
             <thead>
-              <tr className="border-b border-white/8 bg-white/3">
-                <th className="text-left text-slate-400 font-medium px-4 py-3">Interview</th>
-                <th className="text-left text-slate-400 font-medium px-4 py-3">User</th>
-                <th className="text-left text-slate-400 font-medium px-4 py-3">Status</th>
-                <th className="text-left text-slate-400 font-medium px-4 py-3">Score</th>
-                <th className="text-left text-slate-400 font-medium px-4 py-3">Answers</th>
-                <th className="text-left text-slate-400 font-medium px-4 py-3">Date</th>
-                <th className="text-right text-slate-400 font-medium px-4 py-3">Actions</th>
+              <tr>
+                <th>Interview</th>
+                <th>Candidate</th>
+                <th>Status</th>
+                <th>Score</th>
+                <th>Answers</th>
+                <th>Date</th>
+                {isSuperAdmin && <th className="text-right">Actions</th>}
               </tr>
             </thead>
-            <tbody className="divide-y divide-white/5">
-              {loading ? (
-                Array.from({ length: 8 }).map((_, i) => (
+            <tbody>
+              {isLoading
+                ? Array.from({ length: 8 }).map((_, i) => (
                   <tr key={i}>
-                    {Array.from({ length: 7 }).map((__, j) => (
-                      <td key={j} className="px-4 py-3">
-                        <div className="h-4 bg-white/5 rounded animate-pulse" />
+                    <td>
+                      <div className="space-y-1.5">
+                        <Skeleton className="h-3.5 w-40" />
+                        <Skeleton className="h-3 w-24" />
+                      </div>
+                    </td>
+                    <td>
+                      <div className="space-y-1.5">
+                        <Skeleton className="h-3.5 w-28" />
+                        <Skeleton className="h-3 w-40" />
+                      </div>
+                    </td>
+                    <td><Skeleton className="h-6 w-24 rounded-full" /></td>
+                    <td><Skeleton className="h-6 w-12 rounded-full" /></td>
+                    <td><Skeleton className="h-4 w-8" /></td>
+                    <td><Skeleton className="h-4 w-24" /></td>
+                    {isSuperAdmin && <td><Skeleton className="ml-auto h-8 w-8 rounded-full" /></td>}
+                  </tr>
+                ))
+                : sessions.map((s) => {
+                  const st = STATUS[s.status] || { tone: 'stone', label: s.status || 'Unknown' };
+                  return (
+                    <tr key={s._id}>
+                      <td>
+                        <p className={cn('max-w-[240px] truncate font-medium', !s.interviewId && 'text-muted')}>
+                          {s.interviewId?.jobTitle ?? 'Deleted interview'}
+                        </p>
+                        {s.interviewId?.company && (
+                          <p className="max-w-[240px] truncate text-[12.5px] text-muted">{s.interviewId.company}</p>
+                        )}
                       </td>
-                    ))}
-                  </tr>
-                ))
-              ) : data.sessions.length === 0 ? (
-                <tr>
-                  <td colSpan={7} className="text-center py-12">
-                    <MessageSquare size={36} className="text-slate-700 mx-auto mb-2" />
-                    <p className="text-slate-500">No sessions found</p>
-                  </td>
-                </tr>
-              ) : (
-                data.sessions.map((s) => (
-                  <tr key={s._id} className="hover:bg-white/3 transition-colors">
-                    <td className="px-4 py-3">
-                      <p className="text-white font-medium truncate max-w-[160px]">
-                        {s.interviewId?.jobTitle ?? 'Deleted Interview'}
-                      </p>
-                      <p className="text-slate-500 text-xs">{s.interviewId?.company ?? ''}</p>
-                    </td>
-                    <td className="px-4 py-3">
-                      <p className="text-slate-300 text-xs">{s.userId?.name ?? '—'}</p>
-                      <p className="text-slate-500 text-xs">{s.userId?.email ?? ''}</p>
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className={`badge ${STATUS_COLORS[s.status] ?? 'badge-slate'} capitalize`}>
-                        {s.status}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3">
-                      <ScoreBadge score={s.overallScore} />
-                    </td>
-                    <td className="px-4 py-3 text-slate-300">
-                      {s.answers?.length ?? 0}
-                    </td>
-                    <td className="px-4 py-3 text-slate-400 text-xs">
-                      {new Date(s.createdAt).toLocaleDateString()}
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      <button
-                        onClick={() => setDelItem(s)}
-                        className="p-1.5 rounded-lg text-slate-400 hover:text-red-400 hover:bg-red-500/10 transition-all"
-                        title="Delete"
-                      >
-                        <Trash2 size={14} />
-                      </button>
-                    </td>
-                  </tr>
-                ))
-              )}
+                      <td>
+                        {s.userId ? (
+                          <div className="flex items-center gap-2.5">
+                            <Avatar name={s.userId.name} size={28} tone="stone" />
+                            <div className="min-w-0">
+                              <p className="max-w-[200px] truncate text-[13.5px]">{s.userId.name ?? '—'}</p>
+                              <p className="max-w-[200px] truncate text-[12.5px] text-muted">{s.userId.email ?? ''}</p>
+                            </div>
+                          </div>
+                        ) : (
+                          <span className="text-[13px] text-muted">Deleted account</span>
+                        )}
+                      </td>
+                      <td><Pill tone={st.tone} mono>{st.label}</Pill></td>
+                      <td><ScorePill score={s.overallScore} /></td>
+                      <td className="tabular">{s.answers?.length ?? 0}</td>
+                      <td className="whitespace-nowrap">
+                        <p className="whitespace-nowrap text-[13px]">{formatDate(s.createdAt)}</p>
+                        <p className="whitespace-nowrap text-[12px] text-muted">{timeAgo(s.createdAt)}</p>
+                      </td>
+                      {isSuperAdmin && (
+                        <td>
+                          <div className="flex justify-end">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              iconOnly
+                              icon={Trash2}
+                              title="Delete session"
+                              aria-label="Delete session"
+                              loading={deletingId === s._id}
+                              className="hover:bg-coral-soft hover:text-coral"
+                              onClick={() => handleDelete(s)}
+                            />
+                          </div>
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })}
             </tbody>
-          </table>
-        </div>
+          </TableShell>
 
-        {data.pages > 1 && (
-          <div className="flex items-center justify-between px-4 py-3 border-t border-white/8">
-            <p className="text-slate-500 text-xs">Page {page} of {data.pages}</p>
-            <div className="flex gap-2">
-              <button disabled={page === 1} onClick={() => setPage(p => p - 1)} className="p-1.5 rounded-lg bg-white/5 border border-white/10 text-slate-400 hover:text-white disabled:opacity-40 transition-all">
-                <ChevronLeft size={15} />
-              </button>
-              <button disabled={page === data.pages} onClick={() => setPage(p => p + 1)} className="p-1.5 rounded-lg bg-white/5 border border-white/10 text-slate-400 hover:text-white disabled:opacity-40 transition-all">
-                <ChevronRight size={15} />
-              </button>
+          {!isLoading && totalPages > 1 && (
+            <div className="flex flex-col items-center justify-between gap-3 sm:flex-row">
+              <p className="mono-label text-muted tabular">Showing {from}–{to} of {total}</p>
+              <Pagination page={page} totalPages={totalPages} onPageChange={setPage} disabled={isFetching} />
             </div>
-          </div>
-        )}
-      </div>
-
-      {delItem && (
-        <ConfirmModal
-          message="Delete this session and all its answers? This cannot be undone."
-          onConfirm={() => handleDelete(delItem._id)}
-          onClose={() => setDelItem(null)}
-        />
+          )}
+        </div>
       )}
     </div>
   );

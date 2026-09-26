@@ -1,275 +1,310 @@
 /**
- * pages/admin/AdminAnalyticsPage.jsx
- *
- * Full-scale InterviewMaster platform analytics dashboard.
- * Visualizes user growth signups, monthly revenue generation,
- * session performance ratings, and weekly candidate retention cohorts.
- * Includes time-range selectors and raw JSON compile exports actions.
+ * AdminAnalyticsPage — platform analytics for a selectable range (GET /admin/analytics/stats?range=):
+ * candidate growth, conversion, session completion, average mock score, daily sign-up / revenue /
+ * session / job trends and the retention curve. The full report can be exported as JSON.
  */
 
-import { useState, useEffect, useCallback } from 'react';
-import {
-  AreaChart, Area, BarChart, Bar, LineChart, Line,
-  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
-} from 'recharts';
-import {
-  BarChart2, Calendar, Download, Sparkles, TrendingUp,
-  Percent, Star, Briefcase, Activity, Loader2
-} from 'lucide-react';
-import { getAdminAnalytics } from '@/services/admin.service';
+import { useMemo, useState } from 'react';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
+import {
+  ResponsiveContainer, AreaChart, Area, BarChart, Bar, LineChart, Line,
+  XAxis, YAxis, CartesianGrid, Tooltip,
+} from 'recharts';
+import { Download, TrendingUp, Percent, Activity, Star, RefreshCw, Info } from 'lucide-react';
+import { getAdminAnalytics } from '@/services/admin.service';
+import {
+  Button, Card, CHART, ChartTooltip, ErrorState, PageHeader, Pill, Segmented, Skeleton, StatTile,
+} from '@/components/ui';
+import { formatINR, getErrorMessage } from '@/utils';
+
+const RANGES = [
+  { value: '7d', label: '7 days' },
+  { value: '30d', label: '30 days' },
+  { value: '90d', label: '90 days' },
+  { value: '1y', label: '1 year' },
+];
+
+/** '2026-09-19' → 'Sep 19' (UTC buckets from the API, so format in UTC). */
+const dayLabel = (iso, withYear) => {
+  if (!iso) return '';
+  const d = new Date(`${iso}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString('en-US', {
+    month: 'short', day: 'numeric', timeZone: 'UTC', ...(withYear ? { year: 'numeric' } : {}),
+  });
+};
+
+const withLabels = (series, withYear) =>
+  (Array.isArray(series) ? series : []).map((p) => ({ ...p, label: dayLabel(p.date, withYear) }));
+
+const sumOf = (series, key) => series.reduce((acc, p) => acc + (Number(p[key]) || 0), 0);
+
+function ChartCard({ title, caption, loading, empty, emptyLabel, className, children, badge, footer }) {
+  return (
+    <Card className={`p-5 sm:p-6 ${className || ''}`}>
+      <div className="mb-5 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+        <h2 className="flex items-center gap-2 text-[17px] font-medium tracking-tight1">
+          {title}
+          {badge}
+        </h2>
+        {caption && <span className="mono-label text-muted tabular">{caption}</span>}
+      </div>
+      <div className="h-64">
+        {loading ? (
+          <Skeleton className="h-full w-full rounded-r18" />
+        ) : empty ? (
+          <div className="grid h-full place-items-center rounded-r18 bg-paper px-6 text-center text-[13.5px] text-muted">
+            {emptyLabel || 'No data in this range'}
+          </div>
+        ) : (
+          <ResponsiveContainer width="100%" height="100%">{children}</ResponsiveContainer>
+        )}
+      </div>
+      {footer}
+    </Card>
+  );
+}
 
 export default function AdminAnalyticsPage() {
-  const [range, setRange]       = useState('30d');
-  const [data, setData]         = useState(null);
-  const [loading, setLoading]   = useState(true);
+  const [range, setRange] = useState('30d');
 
-  // Fetch metrics data based on range
-  const loadAnalytics = useCallback(async () => {
-    setLoading(true);
-    try {
+  const { data, isLoading, isFetching, isError, error, refetch } = useQuery({
+    queryKey: ['admin-analytics', range],
+    queryFn: async () => {
       const res = await getAdminAnalytics({ range });
-      if (res.success && res.data) {
-        setData(res.data);
-      }
-    } catch {
-      toast.error('Failed to load platform analytics report.');
-    } finally {
-      setLoading(false);
-    }
-  }, [range]);
+      if (!res?.success || !res.data) throw new Error('The analytics report came back empty.');
+      return res.data;
+    },
+    placeholderData: keepPreviousData,
+    staleTime: 60_000,
+  });
 
-  useEffect(() => {
-    loadAnalytics();
-  }, [loadAnalytics]);
+  const rangeLabel = RANGES.find((r) => r.value === range)?.label.toLowerCase() || range;
+  const metrics = data?.metrics || {};
+  const cohort = Array.isArray(data?.retention) ? data.retention : [];
+  const trends = useMemo(() => {
+    const t = data?.trends || {};
+    const withYear = range === '1y';
+    return {
+      users: withLabels(t.users, withYear),
+      revenue: withLabels(t.revenue, withYear),
+      sessions: withLabels(t.sessions, withYear),
+      jobs: withLabels(t.jobs, withYear),
+    };
+  }, [data, range]);
+
+  const totals = {
+    users: sumOf(trends.users, 'count'),
+    revenue: sumOf(trends.revenue, 'amount'),
+    sessions: sumOf(trends.sessions, 'count'),
+    jobs: sumOf(trends.jobs, 'count'),
+  };
 
   // Export full JSON report
   const handleExportReport = () => {
     if (!data) return toast.error('No analytics report compiled to export.');
 
-    const jsonString = `data:text/json;charset=utf-8,${encodeURIComponent(
-      JSON.stringify(data, null, 2)
-    )}`;
+    const jsonString = `data:text/json;charset=utf-8,${encodeURIComponent(JSON.stringify(data, null, 2))}`;
     const link = document.createElement('a');
     link.setAttribute('href', jsonString);
     link.setAttribute('download', `platform_analytics_report_${range}_${Date.now()}.json`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-    toast.success('JSON analytical report compiled and downloaded.');
+    toast.success('Analytics report downloaded as JSON.');
+    return undefined;
   };
 
-  const metrics = data?.metrics || {};
-  const trends  = data?.trends || {};
-  const cohort  = data?.retention || [];
+  const axisX = {
+    dataKey: 'label',
+    ...CHART.axisProps,
+    minTickGap: 24,
+    interval: 'preserveStartEnd',
+    // 1-year view: "Sep 26, 2025" in the tooltip, "Sep 2025" on the axis.
+    ...(range === '1y' ? { tickFormatter: (v) => String(v).replace(/\s\d{1,2},/, '') } : {}),
+  };
+  const margin = { top: 5, right: 26, left: -18, bottom: 0 };
+  const loadingCharts = isLoading;
 
   return (
-    <div className="space-y-6 max-w-[1600px] mx-auto pb-8 relative">
+    <div className="space-y-8">
+      <PageHeader
+        eyebrow="Admin · Analytics"
+        title="Platform analytics"
+        description="Candidate growth, premium conversion, practice completion, revenue and job imports over time."
+        actions={
+          <>
+            <Button variant="soft" icon={RefreshCw} onClick={() => refetch()} loading={isFetching && !isLoading}>
+              Refresh
+            </Button>
+            <Button variant="ink" icon={Download} onClick={handleExportReport} disabled={isLoading || !data}>
+              Export JSON
+            </Button>
+          </>
+        }
+      />
 
-      {/* ── Header & Filters ────────────────────────────────── */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-white tracking-tight">Platform Analytics</h1>
-          <p className="text-slate-400 text-sm mt-0.5">Track growth trends, mock session completions, conversation feedback scores, and monthly revenue flows</p>
-        </div>
-
-        {/* Filters and Export tools */}
-        <div className="flex items-center gap-3 self-start sm:self-auto flex-shrink-0">
-          <div className="relative">
-            <Calendar size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
-            <select
-              className="form-select text-xs pl-8 pr-8 py-2"
-              value={range}
-              onChange={(e) => setRange(e.target.value)}
-            >
-              <option value="7d">Range: Last 7 Days</option>
-              <option value="30d">Range: Last 30 Days</option>
-              <option value="90d">Range: Last 90 Days</option>
-              <option value="1y">Range: Last 1 Year</option>
-            </select>
-          </div>
-
-          <button
-            onClick={handleExportReport}
-            disabled={loading || !data}
-            className="btn-secondary text-xs px-4 py-2 flex items-center gap-1.5 hover:text-indigo-400"
-          >
-            <Download size={13} />
-            Export Report
-          </button>
-        </div>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <Segmented ariaLabel="Date range" options={RANGES} value={range} onChange={setRange} />
+        <span className="mono-label text-muted" aria-live="polite">
+          {isFetching ? 'Updating…' : `Trends · last ${rangeLabel} · UTC days`}
+        </span>
       </div>
 
-      {loading ? (
-        <div className="flex flex-col items-center justify-center min-h-[50vh] gap-3">
-          <Loader2 className="animate-spin text-brand-500" size={32} />
-          <span className="text-slate-500 text-xs font-semibold">Aggregating platform datasets...</span>
-        </div>
+      {isError && !data ? (
+        <ErrorState
+          title="Couldn’t load platform analytics"
+          description={getErrorMessage(error, 'Failed to load platform analytics report.')}
+          onRetry={refetch}
+        />
       ) : (
-        <div className="space-y-6">
+        <>
+          {isError && (
+            <ErrorState
+              compact
+              title={`Couldn’t refresh the ${rangeLabel} report`}
+              description={`${getErrorMessage(error, 'The analytics service did not respond.')} Showing the last loaded report.`}
+              onRetry={refetch}
+            />
+          )}
 
-          {/* ── Analytical Metrics Cards ───────────────────────── */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-            
-            {/* User Growth */}
-            <div className="card p-5 bg-[#0f0f22]/30 border-white/[0.06] flex items-center justify-between">
-              <div className="space-y-1">
-                <span className="text-slate-500 text-xs font-semibold">Candidates Registered</span>
-                <p className="text-2xl font-bold text-white mt-1 leading-none">{metrics.totalCandidates ?? 0}</p>
-                <p className="text-[10px] text-indigo-400">Premium: {metrics.premiumCandidates ?? 0}</p>
-              </div>
-              <div className="p-3 bg-indigo-500/10 rounded-2xl text-indigo-400">
-                <TrendingUp size={20} />
-              </div>
-            </div>
-
-            {/* Conversions rate */}
-            <div className="card p-5 bg-[#0f0f22]/30 border-white/[0.06] flex items-center justify-between">
-              <div className="space-y-1">
-                <span className="text-slate-500 text-xs font-semibold">Premium Conversion Rate</span>
-                <p className="text-2xl font-bold text-white mt-1 leading-none">{metrics.conversionRate ?? 0}%</p>
-                <p className="text-[10px] text-slate-500">Subscribers / Total ratio</p>
-              </div>
-              <div className="p-3 bg-emerald-500/10 rounded-2xl text-emerald-400">
-                <Percent size={20} />
-              </div>
-            </div>
-
-            {/* Mock completion rate */}
-            <div className="card p-5 bg-[#0f0f22]/30 border-white/[0.06] flex items-center justify-between">
-              <div className="space-y-1">
-                <span className="text-slate-500 text-xs font-semibold">Session Completion Rate</span>
-                <p className="text-2xl font-bold text-white mt-1 leading-none">{metrics.completionRate ?? 0}%</p>
-                <p className="text-[10px] text-slate-500">{metrics.completedSessionsCount ?? 0} finished attempts</p>
-              </div>
-              <div className="p-3 bg-teal-500/10 rounded-2xl text-teal-400">
-                <Activity size={20} />
-              </div>
-            </div>
-
-            {/* Average Mock Score */}
-            <div className="card p-5 bg-[#0f0f22]/30 border-white/[0.06] flex items-center justify-between">
-              <div className="space-y-1">
-                <span className="text-slate-500 text-xs font-semibold">Average Mock Rating</span>
-                <p className="text-2xl font-bold text-white mt-1 leading-none">{metrics.averageMockScore ?? 0}/100</p>
-                <p className="text-[10px] text-amber-400">Candidate evaluations rating</p>
-              </div>
-              <div className="p-3 bg-amber-500/10 rounded-2xl text-amber-400">
-                <Star size={20} />
-              </div>
-            </div>
-
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <StatTile
+              tone="ink"
+              icon={TrendingUp}
+              label="Candidates registered"
+              value={metrics.totalCandidates ?? 0}
+              sub={`Premium: ${metrics.premiumCandidates ?? 0}`}
+              loading={isLoading}
+            />
+            <StatTile
+              tone="lime"
+              icon={Percent}
+              label="Premium conversion"
+              value={`${metrics.conversionRate ?? 0}%`}
+              sub="Active passes / all candidates"
+              loading={isLoading}
+            />
+            <StatTile
+              icon={Activity}
+              label="Session completion"
+              value={`${metrics.completionRate ?? 0}%`}
+              sub={`${metrics.completedSessionsCount ?? 0} of ${metrics.activeSessionsCount ?? 0} sessions finished`}
+              loading={isLoading}
+            />
+            <StatTile
+              icon={Star}
+              label="Average mock score"
+              value={
+                <>
+                  {metrics.averageMockScore ?? 0}
+                  <span className="text-[18px] text-muted">/100</span>
+                </>
+              }
+              sub={`${metrics.totalJobs ?? 0} live job listings`}
+              loading={isLoading}
+            />
           </div>
 
-          {/* ── Charts Grid section ────────────────────────────── */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+            <ChartCard
+              title="Candidate sign-ups"
+              caption={`${totals.users} in range`}
+              loading={loadingCharts}
+              empty={!totals.users}
+              emptyLabel={`No candidate sign-ups in the last ${rangeLabel}`}
+            >
+              <AreaChart data={trends.users} margin={margin}>
+                <defs>
+                  <linearGradient id="an-users" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={CHART.blue} stopOpacity={0.25} />
+                    <stop offset="100%" stopColor={CHART.blue} stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke={CHART.grid} vertical={false} />
+                <XAxis {...axisX} />
+                <YAxis allowDecimals={false} {...CHART.axisProps} />
+                <Tooltip content={<ChartTooltip />} />
+                <Area type="monotone" dataKey="count" name="Sign-ups" stroke={CHART.blue} strokeWidth={2} fill="url(#an-users)" />
+              </AreaChart>
+            </ChartCard>
 
-            {/* Chart 1: User Growth Area Chart */}
-            <div className="card p-5 bg-[#0f0f22]/30 border-white/[0.06] space-y-4">
-              <h3 className="text-white text-xs font-bold uppercase tracking-wider flex items-center gap-2">
-                <TrendingUp size={14} className="text-indigo-400" />
-                Signups Growth Curve
-              </h3>
-              <div className="h-72">
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={trends.users} margin={{ left: -20, top: 10, right: 10 }}>
-                    <defs>
-                      <linearGradient id="userGrad" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#6366f1" stopOpacity={0.2}/>
-                        <stop offset="95%" stopColor="#6366f1" stopOpacity={0}/>
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
-                    <XAxis dataKey="date" stroke="#64748b" fontSize={10} />
-                    <YAxis stroke="#64748b" fontSize={10} allowDecimals={false} />
-                    <Tooltip contentStyle={{ backgroundColor: '#14142a', border: '1px solid rgba(255,255,255,0.1)', color: '#fff' }} />
-                    <Area type="monotone" dataKey="count" name="Signups" stroke="#6366f1" strokeWidth={2} fillOpacity={1} fill="url(#userGrad)" />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
+            <ChartCard
+              title="Revenue"
+              caption={`${formatINR(totals.revenue)} in range`}
+              loading={loadingCharts}
+              empty={!totals.revenue}
+              emptyLabel={`No confirmed PayU revenue in the last ${rangeLabel}`}
+            >
+              <BarChart data={trends.revenue} margin={{ ...margin, left: -6 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={CHART.grid} vertical={false} />
+                <XAxis {...axisX} />
+                <YAxis {...CHART.axisProps} tickFormatter={(v) => `₹${v}`} />
+                <Tooltip content={<ChartTooltip formatter={formatINR} />} cursor={{ fill: '#F1F2F0' }} />
+                <Bar dataKey="amount" name="Revenue" fill={CHART.ink} radius={[6, 6, 0, 0]} maxBarSize={28} />
+              </BarChart>
+            </ChartCard>
 
-            {/* Chart 2: Revenue Bar Chart */}
-            <div className="card p-5 bg-[#0f0f22]/30 border-white/[0.06] space-y-4">
-              <h3 className="text-white text-xs font-bold uppercase tracking-wider flex items-center gap-2">
-                <TrendingUp size={14} className="text-emerald-400" />
-                Platform Billing Income
-              </h3>
-              <div className="h-72">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={trends.revenue} margin={{ left: -20, top: 10, right: 10 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
-                    <XAxis dataKey="date" stroke="#64748b" fontSize={10} />
-                    <YAxis stroke="#64748b" fontSize={10} unit="$" />
-                    <Tooltip formatter={(value) => [`$${value.toFixed(2)}`, 'Revenue']} contentStyle={{ backgroundColor: '#14142a', border: '1px solid rgba(255,255,255,0.1)', color: '#fff' }} />
-                    <Bar dataKey="amount" fill="#10b981" radius={[4, 4, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
+            <ChartCard
+              title="Mock attempts started"
+              caption={`${totals.sessions} in range`}
+              loading={loadingCharts}
+              empty={!totals.sessions}
+              emptyLabel={`No practice sessions started in the last ${rangeLabel}`}
+            >
+              <LineChart data={trends.sessions} margin={margin}>
+                <CartesianGrid strokeDasharray="3 3" stroke={CHART.grid} vertical={false} />
+                <XAxis {...axisX} />
+                <YAxis allowDecimals={false} {...CHART.axisProps} />
+                <Tooltip content={<ChartTooltip />} />
+                <Line type="monotone" dataKey="count" name="Attempts" stroke={CHART.blue} strokeWidth={2} dot={false} />
+              </LineChart>
+            </ChartCard>
 
-            {/* Chart 3: Mock sessions runs Line Chart */}
-            <div className="card p-5 bg-[#0f0f22]/30 border-white/[0.06] space-y-4">
-              <h3 className="text-white text-xs font-bold uppercase tracking-wider flex items-center gap-2">
-                <Activity size={14} className="text-teal-400" />
-                Candidate Mock Attempts
-              </h3>
-              <div className="h-72">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={trends.sessions} margin={{ left: -20, top: 10, right: 10 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
-                    <XAxis dataKey="date" stroke="#64748b" fontSize={10} />
-                    <YAxis stroke="#64748b" fontSize={10} allowDecimals={false} />
-                    <Tooltip contentStyle={{ backgroundColor: '#14142a', border: '1px solid rgba(255,255,255,0.1)', color: '#fff' }} />
-                    <Line type="monotone" dataKey="count" name="Attempts Started" stroke="#14b8a6" strokeWidth={2.5} dot={false} />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
+            <ChartCard
+              title="Jobs imported"
+              caption={`${totals.jobs} in range`}
+              loading={loadingCharts}
+              empty={!totals.jobs}
+              emptyLabel={`No job listings added in the last ${rangeLabel}`}
+            >
+              <BarChart data={trends.jobs} margin={margin}>
+                <CartesianGrid strokeDasharray="3 3" stroke={CHART.grid} vertical={false} />
+                <XAxis {...axisX} />
+                <YAxis allowDecimals={false} {...CHART.axisProps} />
+                <Tooltip content={<ChartTooltip />} cursor={{ fill: '#F1F2F0' }} />
+                <Bar dataKey="count" name="Jobs" fill={CHART.blueSoft} radius={[6, 6, 0, 0]} maxBarSize={28} />
+              </BarChart>
+            </ChartCard>
 
-            {/* Chart 4: Job listings imports Bar Chart */}
-            <div className="card p-5 bg-[#0f0f22]/30 border-white/[0.06] space-y-4">
-              <h3 className="text-white text-xs font-bold uppercase tracking-wider flex items-center gap-2">
-                <Briefcase size={14} className="text-blue-400" />
-                Scrape Jobs Imports Growth
-              </h3>
-              <div className="h-72">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={trends.jobs} margin={{ left: -20, top: 10, right: 10 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
-                    <XAxis dataKey="date" stroke="#64748b" fontSize={10} />
-                    <YAxis stroke="#64748b" fontSize={10} allowDecimals={false} />
-                    <Tooltip contentStyle={{ backgroundColor: '#14142a', border: '1px solid rgba(255,255,255,0.1)', color: '#fff' }} />
-                    <Bar dataKey="count" name="Jobs Posted" fill="#3b82f6" radius={[4, 4, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-
-            {/* Chart 5: Weekly Retention Cohort Bar Chart */}
-            <div className="card p-5 bg-[#0f0f22]/30 border-white/[0.06] space-y-4 lg:col-span-2">
-              <h3 className="text-white text-xs font-bold uppercase tracking-wider flex items-center gap-2">
-                <Percent size={14} className="text-violet-400" />
-                Candidate Engagement Cohort Retention
-              </h3>
-              <div className="h-72">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={cohort} layout="vertical" margin={{ left: 10, top: 10, right: 10 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
-                    <XAxis type="number" stroke="#64748b" fontSize={10} unit="%" domain={[0, 100]} />
-                    <YAxis type="category" dataKey="cohort" stroke="#64748b" fontSize={10} width={90} />
-                    <Tooltip formatter={(value) => [`${value}%`, 'Retention Rate']} contentStyle={{ backgroundColor: '#14142a', border: '1px solid rgba(255,255,255,0.1)', color: '#fff' }} />
-                    <Bar dataKey="rate" fill="#8b5cf6" radius={[0, 4, 4, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-
+            <ChartCard
+              className="lg:col-span-2"
+              title="Candidate retention"
+              badge={<Pill tone="stone" mono>Reference curve</Pill>}
+              caption="Weekly cohorts"
+              loading={loadingCharts}
+              empty={cohort.length === 0}
+              emptyLabel="No retention data returned"
+              footer={
+                <p className="mt-4 flex items-start gap-2 text-[12.5px] text-muted">
+                  <Info size={14} className="mt-0.5 flex-shrink-0" aria-hidden="true" />
+                  This is a fixed reference curve returned by the analytics API; it doesn’t change with the selected range.
+                </p>
+              }
+            >
+              <BarChart data={cohort} layout="vertical" margin={{ top: 5, right: 16, left: 8, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={CHART.grid} horizontal={false} />
+                <XAxis type="number" domain={[0, 100]} {...CHART.axisProps} tickFormatter={(v) => `${v}%`} />
+                <YAxis type="category" dataKey="cohort" width={104} {...CHART.axisProps} />
+                <Tooltip content={<ChartTooltip formatter={(v) => `${v}%`} />} cursor={{ fill: '#F1F2F0' }} />
+                <Bar dataKey="rate" name="Retention" fill={CHART.blue} radius={[0, 6, 6, 0]} maxBarSize={26} />
+              </BarChart>
+            </ChartCard>
           </div>
 
-        </div>
+        </>
       )}
-
     </div>
   );
 }

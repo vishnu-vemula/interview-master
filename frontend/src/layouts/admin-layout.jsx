@@ -1,31 +1,20 @@
 /**
- * layouts/AdminLayout.jsx
- *
- * The root shell for all admin pages.
- * Composed of:
- *  - Desktop: collapsible sidebar (icon-only or full width) + topbar + page content
- *  - Mobile: hidden sidebar, topbar with hamburger, MobileDrawer overlay
- *
- * State managed here (not in child components) to keep layout logic centralized:
- *  - collapsed    — sidebar collapsed state (persisted in localStorage)
- *  - mobileOpen   — mobile drawer open state
- *  - darkMode     — dark/light mode toggle (persisted in localStorage)
- *
- * Dark mode implementation:
- *  Toggles the `admin-light` class on the layout root div.
- *  CSS variables can key off this class to switch themes in a later phase.
- *  Current implementation is dark-first — light mode softens backgrounds.
+ * AdminLayout — shell for all /admin pages.
+ *  - Desktop: framed ink sidebar (collapsible, persisted) + sticky topbar + scrollable content
+ *  - Mobile: topbar with menu button and a slide-in drawer
  */
 
-import { useState, useEffect } from 'react';
-import { Outlet } from 'react-router-dom';
-import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { Suspense, useEffect, useState } from 'react';
+import { Outlet, useLocation } from 'react-router-dom';
+import { ChevronsLeft, ChevronsRight } from 'lucide-react';
 
-import AdminSidebar   from '@/components/admin/sidebar/admin-sidebar';
-import MobileDrawer   from '@/components/admin/sidebar/mobile-drawer';
-import AdminTopbar    from '@/components/admin/topbar/admin-topbar';
+import AdminSidebar from '@/components/admin/sidebar/admin-sidebar';
+import MobileDrawer from '@/components/admin/sidebar/mobile-drawer';
+import AdminTopbar from '@/components/admin/topbar/admin-topbar';
+import SuspenseLoader from '@/components/admin/suspense-loader';
+import RouteErrorBoundary from '@/components/common/route-error-boundary';
+import { cn } from '@/utils';
 
-// ─── Persist helpers ──────────────────────────────────────────────
 const getStored = (key, fallback) => {
   try {
     const v = localStorage.getItem(key);
@@ -36,100 +25,52 @@ const getStored = (key, fallback) => {
 };
 
 export default function AdminLayout() {
-  const [collapsed,   setCollapsed]   = useState(() => getStored('admin-sidebar-collapsed', false));
-  const [mobileOpen,  setMobileOpen]  = useState(false);
-  const [darkMode,    setDarkMode]    = useState(() => getStored('admin-dark-mode', true));
+  const [collapsed, setCollapsed] = useState(() => getStored('admin-sidebar-collapsed', false));
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const { pathname } = useLocation();
 
-  // Persist preferences
   useEffect(() => {
     localStorage.setItem('admin-sidebar-collapsed', JSON.stringify(collapsed));
   }, [collapsed]);
 
+  useEffect(() => { setMobileOpen(false); }, [pathname]);
   useEffect(() => {
-    localStorage.setItem('admin-dark-mode', JSON.stringify(darkMode));
-  }, [darkMode]);
-
-  // Close mobile drawer on resize to lg+
-  useEffect(() => {
-    const handler = () => {
-      if (window.innerWidth >= 1024) setMobileOpen(false);
-    };
+    const handler = () => { if (window.innerWidth >= 1024) setMobileOpen(false); };
     window.addEventListener('resize', handler);
     return () => window.removeEventListener('resize', handler);
   }, []);
 
-  const sidebarW = collapsed ? 'w-[70px]' : 'w-[240px]';
-
   return (
-    <div className={`flex h-screen overflow-hidden transition-colors duration-300 ${
-      darkMode
-        ? 'bg-[#080814] text-white'
-        : 'bg-slate-100 text-slate-900'
-    }`}>
-
-      {/* ── Desktop Sidebar ──────────────────────────────────── */}
+    <div className="flex min-h-dvh bg-paper lg:p-2.5">
       <aside
-        className={`
-          hidden lg:flex flex-col flex-shrink-0
-          ${sidebarW}
-          transition-all duration-300 ease-in-out
-          ${darkMode
-            ? 'bg-[#0c0c1d] border-r border-white/[0.07]'
-            : 'bg-white border-r border-slate-200'
-          }
-          relative
-        `}
+        className={cn(
+          'sticky top-2.5 hidden h-[calc(100dvh-20px)] flex-shrink-0 rounded-r28 bg-ink p-3 transition-[width] duration-300 lg:block',
+          collapsed ? 'w-[80px]' : 'w-[256px]',
+        )}
       >
-        {/* Sidebar content */}
-        <div className={darkMode ? '' : 'admin-light'}>
-          <AdminSidebar collapsed={collapsed} onNavClick={() => {}} />
-        </div>
-
-        {/* Collapse toggle button — floats on the right edge */}
+        <AdminSidebar collapsed={collapsed} />
         <button
-          onClick={() => setCollapsed(!collapsed)}
-          className={`
-            absolute -right-3 top-20 z-10
-            w-6 h-6 rounded-full flex items-center justify-center
-            text-slate-400 hover:text-white transition-all duration-200
-            ${darkMode
-              ? 'bg-[#1a1a35] border border-white/10 hover:border-white/20'
-              : 'bg-white border border-slate-200 shadow-sm hover:shadow-md'
-            }
-          `}
+          type="button"
+          onClick={() => setCollapsed((c) => !c)}
           aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           title={collapsed ? 'Expand' : 'Collapse'}
+          className="absolute -right-3 top-[70px] z-10 grid h-6 w-6 place-items-center rounded-full border border-line bg-white text-muted shadow-card transition-colors hover:text-ink"
         >
-          {collapsed
-            ? <ChevronRight size={12} />
-            : <ChevronLeft size={12} />
-          }
+          {collapsed ? <ChevronsRight size={13} /> : <ChevronsLeft size={13} />}
         </button>
       </aside>
 
-      {/* ── Mobile Drawer ────────────────────────────────────── */}
-      <MobileDrawer
-        open={mobileOpen}
-        onClose={() => setMobileOpen(false)}
-      />
+      <MobileDrawer open={mobileOpen} onClose={() => setMobileOpen(false)} />
 
-      {/* ── Main Content Area ────────────────────────────────── */}
-      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-
-        {/* Topbar */}
-        <AdminTopbar
-          onMenuClick={() => setMobileOpen(true)}
-          darkMode={darkMode}
-          onDarkToggle={() => setDarkMode(!darkMode)}
-        />
-
-        {/* Page content — scrollable */}
-        <main className={`
-          flex-1 overflow-y-auto
-          ${darkMode ? 'bg-[#080814]' : 'bg-slate-50'}
-        `}>
-          <div className="p-4 lg:p-6 max-w-[1600px] mx-auto">
-            <Outlet />
+      <div className="flex min-w-0 flex-1 flex-col">
+        <AdminTopbar onMenuClick={() => setMobileOpen(true)} />
+        <main className="flex-1 px-4 pb-16 pt-6 sm:px-6 lg:px-8 lg:pt-8">
+          <div className="mx-auto w-full max-w-[1400px]">
+            <RouteErrorBoundary key={pathname} home="/admin" homeLabel="Admin dashboard">
+              <Suspense fallback={<SuspenseLoader />}>
+                <Outlet />
+              </Suspense>
+            </RouteErrorBoundary>
           </div>
         </main>
       </div>

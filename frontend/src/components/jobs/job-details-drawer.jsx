@@ -1,153 +1,94 @@
-import React, { useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { X, ExternalLink, MapPin, Banknote, Building2, Calendar, Loader2 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
-import { jobsAPI } from '../../services/api';
+import { useNavigate } from 'react-router-dom';
+import { Banknote, Building2, Calendar, ExternalLink, MapPin, Play } from 'lucide-react';
+import { jobsAPI } from '@/services/api';
+import { Button, Drawer, Pill, Skeleton } from '@/components/ui';
+import { formatDate } from '@/utils';
+import { contractLabel } from './job-card';
 
+/**
+ * JobDetailsDrawer — list data immediately; full Adzuna details are fetched only for
+ * Adzuna-sourced jobs (numeric ids — the only ids GET /api/jobs/:id accepts).
+ */
 export default function JobDetailsDrawer({ job, onClose }) {
-  // Prevent body scroll when drawer is open
-  useEffect(() => {
-    if (job) {
-      document.body.style.overflow = 'hidden';
-    } else {
-      document.body.style.overflow = 'unset';
-    }
-    return () => {
-      document.body.style.overflow = 'unset';
-    };
-  }, [job]);
+  const navigate = useNavigate();
+  const isAdzunaId = /^\d+$/.test(String(job?.id || ''));
 
-  // Lazy load full job details when the drawer opens
-  const { data: detailData, isLoading } = useQuery({
+  const { data: detail, isLoading } = useQuery({
     queryKey: ['job', job?.id],
-    queryFn: async () => {
-      if (!job?.id) return null;
-      const res = await jobsAPI.getById(job.id);
-      return res.data?.data;
-    },
-    enabled: !!job?.id, // Only fetch if we have an ID
-    staleTime: 10 * 60 * 1000, // Cache details for 10 mins
+    queryFn: () => jobsAPI.getById(job.id).then((r) => r.data?.data ?? r.data),
+    enabled: !!job && isAdzunaId,
+    staleTime: 10 * 60 * 1000,
+    retry: false,
   });
 
   if (!job) return null;
+  const d = { ...job, ...(detail && typeof detail === 'object' ? detail : {}) };
+  const link = d.apply_url || d.url;
+  const posted = d.posted_at || d.postedTime;
+  const description = d.description || d.summary || 'No detailed description was provided by the employer.';
+  const skills = Array.isArray(d.skills) ? d.skills : [];
 
-  // Merge list data with full detailed data if available
-  const displayJob = { ...job, ...detailData };
-
-  const applicationLink = displayJob.apply_url || displayJob.url;
-  const postedDate = displayJob.posted_at ? new Date(displayJob.posted_at).toLocaleDateString(undefined, {
-    year: 'numeric', month: 'short', day: 'numeric'
-  }) : 'Recently';
+  const practice = () => {
+    navigate('/interviews/new', {
+      state: { prefill: { jobTitle: d.title, company: d.company !== 'Not Specified' ? d.company : '', jobDescription: d.description || d.summary || '' } },
+    });
+  };
 
   return (
-    <AnimatePresence>
-      <div className="fixed inset-0 z-50 overflow-hidden">
-        
-        {/* Backdrop */}
-        <motion.div 
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: 0.3 }}
-          onClick={onClose}
-          className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm cursor-pointer"
-          aria-hidden="true"
-        />
-
-        {/* Drawer Panel */}
-        <motion.div
-          initial={{ x: '100%', opacity: 0.5 }}
-          animate={{ x: 0, opacity: 1 }}
-          exit={{ x: '100%', opacity: 0.5 }}
-          transition={{ type: "spring", damping: 25, stiffness: 200 }}
-          className="absolute inset-y-0 right-0 w-full max-w-2xl bg-white dark:bg-slate-900 shadow-2xl flex flex-col border-l border-slate-200 dark:border-slate-800"
-        >
-          
-          {/* Header */}
-          <div className="flex-shrink-0 p-6 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900 flex justify-between items-start">
-            <div className="pr-12">
-              <h2 className="text-2xl font-bold text-slate-900 dark:text-white mb-2 leading-tight">
-                {displayJob.title}
-              </h2>
-              <div className="flex items-center gap-2 text-lg font-medium text-slate-700 dark:text-slate-300">
-                <Building2 className="w-5 h-5 text-brand-500" />
-                {displayJob.company}
-              </div>
-            </div>
-            
-            <button 
-              onClick={onClose}
-              className="absolute top-6 right-6 p-2 rounded-full bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-300 dark:hover:bg-slate-700 transition-colors"
-              aria-label="Close drawer"
-            >
-              <X className="w-5 h-5" />
-            </button>
+    <Drawer
+      open={!!job}
+      onClose={onClose}
+      title={d.title}
+      subtitle={<span className="flex items-center gap-1.5"><Building2 size={14} aria-hidden="true" /> {d.company}</span>}
+      footer={
+        <>
+          <Button variant="soft" icon={Play} onClick={practice}>Practice for this role</Button>
+          {link && <Button href={link} target="_blank" rel="noopener noreferrer" variant="lime" iconRight={ExternalLink}>Apply</Button>}
+        </>
+      }
+    >
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+        {d.location && (
+          <div className="rounded-r18 bg-white p-4">
+            <p className="mono-label flex items-center gap-1 text-muted"><MapPin size={12} aria-hidden="true" /> Location</p>
+            <p className="mt-1.5 text-[14px] font-medium">{d.location}</p>
           </div>
-
-          {/* Body (Scrollable content) */}
-          <div className="flex-1 overflow-y-auto p-6 sm:p-8 custom-scrollbar">
-            
-            {/* Quick Info Cards */}
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mb-8">
-              {displayJob.location && (
-                <div className="bg-slate-50 dark:bg-slate-800/50 p-4 rounded-xl border border-slate-100 dark:border-slate-800">
-                  <div className="text-xs font-bold text-slate-400 uppercase mb-1 flex items-center gap-1"><MapPin className="w-3.5 h-3.5" /> Location</div>
-                  <div className="font-semibold text-slate-800 dark:text-slate-200">{displayJob.location}</div>
-                </div>
-              )}
-              {displayJob.salary && (
-                <div className="bg-green-50 dark:bg-green-500/10 p-4 rounded-xl border border-green-100 dark:border-green-500/20">
-                  <div className="text-xs font-bold text-green-600 dark:text-green-500 uppercase mb-1 flex items-center gap-1"><Banknote className="w-3.5 h-3.5" /> Salary</div>
-                  <div className="font-semibold text-green-700 dark:text-green-400">{displayJob.salary}</div>
-                </div>
-              )}
-              <div className="bg-slate-50 dark:bg-slate-800/50 p-4 rounded-xl border border-slate-100 dark:border-slate-800">
-                <div className="text-xs font-bold text-slate-400 uppercase mb-1 flex items-center gap-1"><Calendar className="w-3.5 h-3.5" /> Posted</div>
-                <div className="font-semibold text-slate-800 dark:text-slate-200">{postedDate}</div>
-              </div>
-            </div>
-
-            {/* Description Section */}
-            <div>
-              <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-4 border-b border-slate-100 dark:border-slate-800 pb-2">
-                Job Description
-              </h3>
-              {isLoading ? (
-                <div className="flex flex-col items-center justify-center py-10 text-slate-400">
-                  <Loader2 className="w-8 h-8 animate-spin mb-3 text-brand-500" />
-                  <p className="text-sm font-medium">Loading full details...</p>
-                </div>
-              ) : (
-                <div className="prose prose-slate dark:prose-invert max-w-none text-slate-600 dark:text-slate-300">
-                  <p className="whitespace-pre-wrap leading-relaxed text-[15px]">
-                    {displayJob.description || displayJob.summary || 'No detailed description provided by the employer.'}
-                  </p>
-                </div>
-              )}
-            </div>
-
+        )}
+        {d.salary && (
+          <div className="rounded-r18 bg-lime-soft p-4">
+            <p className="mono-label flex items-center gap-1 text-lime-ok"><Banknote size={12} aria-hidden="true" /> Salary</p>
+            <p className="mt-1.5 text-[14px] font-medium">{d.salary}</p>
           </div>
-
-          {/* Footer Actions */}
-          <div className="flex-shrink-0 p-6 border-t border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900 flex justify-end gap-4 shadow-[0_-10px_20px_-10px_rgba(0,0,0,0.05)]">
-            <button
-              onClick={onClose}
-              className="px-6 py-3 rounded-xl font-bold text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-            >
-              Cancel
-            </button>
-            <a
-              href={applicationLink}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="px-8 py-3 rounded-xl font-bold text-white bg-brand-600 hover:bg-brand-700 shadow-lg shadow-brand-600/20 flex items-center gap-2 transition-all hover:-translate-y-0.5 active:translate-y-0"
-            >
-              Apply Now <ExternalLink className="w-4 h-4" />
-            </a>
-          </div>
-
-        </motion.div>
+        )}
+        <div className="rounded-r18 bg-white p-4">
+          <p className="mono-label flex items-center gap-1 text-muted"><Calendar size={12} aria-hidden="true" /> Posted</p>
+          <p className="mt-1.5 text-[14px] font-medium">{posted ? formatDate(posted) : 'Recently'}</p>
+        </div>
       </div>
-    </AnimatePresence>
+
+      {(contractLabel(d.contractType) || d.category) && (
+        <div className="mt-4 flex flex-wrap gap-1.5">
+          {d.contractType && contractLabel(d.contractType) && <Pill tone="outline">{contractLabel(d.contractType)}</Pill>}
+          {d.category && <Pill tone="stone">{d.category}</Pill>}
+        </div>
+      )}
+
+      {skills.length > 0 && (
+        <section className="mt-6">
+          <p className="mono-label mb-2 text-muted">Skills</p>
+          <div className="flex flex-wrap gap-1.5">{skills.map((s) => <Pill key={s} tone="blue">{s}</Pill>)}</div>
+        </section>
+      )}
+
+      <section className="mt-6">
+        <p className="mono-label mb-2 text-muted">Description</p>
+        {isAdzunaId && isLoading ? (
+          <div className="space-y-2"><Skeleton className="h-4" /><Skeleton className="h-4 w-11/12" /><Skeleton className="h-4 w-4/5" /></div>
+        ) : (
+          <p className="whitespace-pre-wrap text-[15px] leading-relaxed text-ink-soft">{description}</p>
+        )}
+      </section>
+    </Drawer>
   );
 }

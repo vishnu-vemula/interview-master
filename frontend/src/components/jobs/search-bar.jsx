@@ -1,120 +1,80 @@
-import React, { useState, useEffect } from 'react';
-import { Search, MapPin, X, Building2 } from 'lucide-react';
-import { useDebounce } from '../../utils/use-debounce';
+import { useEffect, useRef, useState } from 'react';
+import { MapPin, Search, X } from 'lucide-react';
+import { useDebounce } from '@/utils/use-debounce';
+import { Spinner } from '@/components/ui';
+import { cn } from '@/utils';
 
-export default function SearchBar({ onSearch, initialQuery = '', initialLocation = '', initialRemote = false, isFetching = false }) {
+/**
+ * SearchBar — keyword + location + remote toggle. Debounced auto-search (300 ms) plus explicit submit.
+ */
+export default function SearchBar({ onSearch, initialQuery = '', initialLocation = '', isFetching = false }) {
   const [query, setQuery] = useState(initialQuery);
   const [location, setLocation] = useState(initialLocation);
-  const [isRemote, setIsRemote] = useState(initialRemote);
+  const [isRemote, setIsRemote] = useState(false);
 
-  // Debounce the inputs (300ms as requested)
   const debouncedQuery = useDebounce(query, 300);
   const debouncedLocation = useDebounce(location, 300);
   const debouncedRemote = useDebounce(isRemote, 300);
+  const first = useRef(true);
 
-  // Auto-search when debounced values change
   useEffect(() => {
-    onSearch({ 
-      q: debouncedQuery, 
-      where: debouncedRemote ? 'remote' : debouncedLocation,
-      remote: debouncedRemote 
-    });
-  }, [debouncedQuery, debouncedLocation, debouncedRemote]);
+    if (first.current) { first.current = false; return; } // initial params are already loaded
+    onSearch({ q: debouncedQuery, where: debouncedRemote ? 'remote' : debouncedLocation });
+  }, [debouncedQuery, debouncedLocation, debouncedRemote]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Manual submit handler for the search button
   const handleSubmit = (e) => {
     e.preventDefault();
-    onSearch({ 
-      q: query, 
-      where: isRemote ? 'remote' : location,
-      remote: isRemote 
-    });
+    onSearch({ q: query, where: isRemote ? 'remote' : location });
   };
 
   return (
-    <div className="w-full relative z-20 group">
-      {/* Premium Glow Effect */}
-      <div className="absolute -inset-1 bg-gradient-to-r from-brand-600 to-brand-400 rounded-3xl blur opacity-25 group-hover:opacity-40 transition duration-500"></div>
-      
-      <form 
-        onSubmit={handleSubmit}
-        className="relative flex flex-col md:flex-row items-center bg-white dark:bg-slate-900 rounded-2xl md:rounded-full border border-slate-200 dark:border-slate-800 shadow-xl overflow-hidden p-1.5 gap-2"
-      >
-        
-        {/* Keywords Search */}
-        <div className="flex-1 flex items-center px-4 py-3 md:py-2 border-b md:border-b-0 md:border-r border-slate-100 dark:border-slate-800 w-full">
-          <Search className="w-5 h-5 text-brand-500 mr-3 flex-shrink-0" />
-          <input
-            type="text"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Job title, keywords, or company..."
-            className="w-full bg-transparent border-none outline-none text-slate-900 dark:text-white placeholder-slate-400 font-medium"
-          />
-          {query && (
-            <button type="button" onClick={() => setQuery('')} className="p-1 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400 transition-colors">
-              <X className="w-4 h-4" />
-            </button>
-          )}
-        </div>
-
-        {/* Location Search */}
-        <div className="flex-1 flex items-center px-4 py-3 md:py-2 border-b md:border-b-0 md:border-r border-slate-100 dark:border-slate-800 w-full transition-opacity duration-300">
-          <MapPin className={`w-5 h-5 mr-3 flex-shrink-0 ${isRemote ? 'text-slate-300 dark:text-slate-600' : 'text-brand-500'}`} />
-          <input
-            type="text"
-            value={isRemote ? 'Remote' : location}
-            onChange={(e) => setLocation(e.target.value)}
-            disabled={isRemote}
-            placeholder="City, state, or zip code..."
-            className="w-full bg-transparent border-none outline-none text-slate-900 dark:text-white placeholder-slate-400 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-          />
-          {location && !isRemote && (
-            <button type="button" onClick={() => setLocation('')} className="p-1 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400 transition-colors">
-              <X className="w-4 h-4" />
-            </button>
-          )}
-        </div>
-
-        {/* Remote Toggle & Submit Button Group */}
-        <div className="flex items-center justify-between md:justify-end w-full md:w-auto px-4 md:px-0 py-2 md:py-0 gap-4">
-          
-          {/* Remote Toggle */}
-          <label className="flex items-center gap-2 cursor-pointer select-none group/toggle">
-            <div className="relative flex items-center justify-center w-5 h-5 rounded border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-800 group-hover/toggle:border-brand-500 transition-colors">
-              <input
-                type="checkbox"
-                checked={isRemote}
-                onChange={(e) => setIsRemote(e.target.checked)}
-                className="absolute opacity-0 w-full h-full cursor-pointer"
-              />
-              {isRemote && (
-                <div className="w-2.5 h-2.5 bg-brand-600 rounded-sm" />
-              )}
-            </div>
-            <span className="text-sm font-bold text-slate-600 dark:text-slate-300 flex items-center gap-1.5 group-hover/toggle:text-slate-900 dark:group-hover/toggle:text-white transition-colors">
-              <Building2 className="w-4 h-4" /> Remote
-            </span>
-          </label>
-
-          {/* Search Button */}
-          <button
-            type="submit"
-            disabled={isFetching}
-            className="px-6 py-3 md:py-2.5 bg-brand-600 hover:bg-brand-700 text-white font-bold rounded-xl md:rounded-full shadow-md shadow-brand-600/20 transition-all hover:shadow-lg hover:shadow-brand-600/30 hover:-translate-y-0.5 active:translate-y-0 flex-shrink-0 disabled:opacity-70 disabled:cursor-not-allowed disabled:hover:-translate-y-0 flex items-center justify-center min-w-[100px]"
-          >
-            {isFetching ? (
-              <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-              </svg>
-            ) : (
-              'Search'
-            )}
+    <form
+      onSubmit={handleSubmit}
+      role="search"
+      className="flex flex-col gap-1.5 rounded-r24 border border-line-2 bg-white p-1.5 md:flex-row md:items-center md:rounded-full"
+    >
+      <label className="flex min-w-0 flex-1 items-center gap-3 rounded-full px-4 py-3 md:py-2.5">
+        <Search size={18} className="flex-shrink-0 text-faint" aria-hidden="true" />
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Role, skill or company"
+          aria-label="Keywords"
+          className="w-full min-w-0 bg-transparent text-[15px] outline-none placeholder:text-faint"
+        />
+        {query && (
+          <button type="button" onClick={() => setQuery('')} aria-label="Clear keywords" className="rounded-full p-1 text-faint hover:bg-stone-2 hover:text-ink">
+            <X size={15} />
           </button>
-        </div>
-        
-      </form>
-    </div>
+        )}
+      </label>
+      <span className="hidden h-7 w-px bg-line md:block" aria-hidden="true" />
+      <label className={cn('flex min-w-0 flex-1 items-center gap-3 rounded-full px-4 py-3 md:py-2.5', isRemote && 'opacity-50')}>
+        <MapPin size={18} className="flex-shrink-0 text-faint" aria-hidden="true" />
+        <input
+          type="text"
+          value={isRemote ? 'Remote' : location}
+          onChange={(e) => setLocation(e.target.value)}
+          disabled={isRemote}
+          placeholder="City or region"
+          aria-label="Location"
+          className="w-full min-w-0 bg-transparent text-[15px] outline-none placeholder:text-faint disabled:cursor-not-allowed"
+        />
+        {location && !isRemote && (
+          <button type="button" onClick={() => setLocation('')} aria-label="Clear location" className="rounded-full p-1 text-faint hover:bg-stone-2 hover:text-ink">
+            <X size={15} />
+          </button>
+        )}
+      </label>
+      <div className="flex items-center justify-between gap-2 px-2 pb-1 md:px-0 md:pb-0">
+        <button type="button" className="chip-toggle" aria-pressed={isRemote} onClick={() => setIsRemote((r) => !r)}>
+          Remote only
+        </button>
+        <button type="submit" className="btn btn-ink min-w-[108px]" disabled={isFetching}>
+          {isFetching ? <Spinner size={15} /> : 'Search'}
+        </button>
+      </div>
+    </form>
   );
 }

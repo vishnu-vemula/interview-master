@@ -1,183 +1,105 @@
 /**
- * pages/admin/AdminLoginPage.jsx
- *
- * Dedicated admin login page at /admin/login.
- * Uses AdminAuthContext (not user auth) to authenticate.
- * On success, redirects to /admin dashboard.
+ * AdminLoginPage — /admin/login. Authenticates through AdminAuthContext (separate from candidates).
  */
 
-import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Shield, Mail, Lock, Eye, EyeOff, AlertCircle, Loader2 } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import { useForm } from 'react-hook-form';
+import { AlertCircle, ShieldCheck } from 'lucide-react';
 import { useAdminAuth } from '@/context';
+import { Alert, Button, Field, Input, LogoMark, PasswordInput } from '@/components/ui';
 
 export default function AdminLoginPage() {
-  const navigate                = useNavigate();
-  const { adminLogin, isLoading, error, clearError, isAdminAuthenticated } = useAdminAuth();
+  const navigate = useNavigate();
+  const { adminLogin, clearError, isAdminAuthenticated } = useAdminAuth();
+  const [serverError, setServerError] = useState('');
+  const { register, handleSubmit, formState: { errors, isSubmitting } } = useForm({
+    defaultValues: { email: '', password: '' },
+  });
 
-  const [form, setForm]           = useState({ email: '', password: '' });
-  const [showPass, setShowPass]   = useState(false);
-  const [formError, setFormError] = useState('');
-
-  // If already authenticated, redirect immediately
   useEffect(() => {
     if (isAdminAuthenticated) navigate('/admin', { replace: true });
   }, [isAdminAuthenticated, navigate]);
 
-  // Sync context error to local display
-  useEffect(() => {
-    if (error) setFormError(error);
-  }, [error]);
-
-  const handleChange = (e) => {
-    setFormError('');
+  const onSubmit = async (data) => {
+    setServerError('');
     clearError();
-    setForm((prev) => ({ ...prev, [e.target.name]: e.target.value }));
-  };
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setFormError('');
-
-    if (!form.email.trim())    return setFormError('Email is required.');
-    if (!form.password.trim()) return setFormError('Password is required.');
-
-    const result = await adminLogin({ email: form.email.trim(), password: form.password });
-
-    if (result.success) {
-      navigate('/admin', { replace: true });
-    } else {
-      setFormError(result.message);
-    }
+    const result = await adminLogin({ email: data.email.trim(), password: data.password });
+    if (result.success) navigate('/admin', { replace: true });
+    else setServerError(result.message);
   };
 
   return (
-    <div className="min-h-screen bg-[#07070f] flex items-center justify-center p-4 relative overflow-hidden">
-
-      {/* Background glow effects */}
-      <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[600px] h-[400px] bg-red-600/8 rounded-full blur-[120px] pointer-events-none" />
-      <div className="absolute bottom-0 right-0 w-[400px] h-[300px] bg-orange-600/6 rounded-full blur-[100px] pointer-events-none" />
-
-      {/* Card */}
-      <div className="relative w-full max-w-md">
-
-        {/* Top badge */}
-        <div className="flex justify-center mb-6">
-          <div className="flex items-center gap-2 px-4 py-2 rounded-full bg-red-500/10 border border-red-500/20">
-            <Shield size={14} className="text-red-400" />
-            <span className="text-red-300 text-xs font-semibold tracking-wide uppercase">Admin Access Only</span>
-          </div>
+    <div className="grid min-h-dvh grid-cols-1 gap-2.5 bg-paper p-2.5 lg:grid-cols-2">
+      <section className="relative flex flex-col overflow-hidden rounded-r28 bg-ink p-6 text-white sm:p-7 lg:min-h-[560px]">
+        <div className="pointer-events-none absolute -bottom-[30%] -right-[20%] h-[70%] w-[80%] rounded-full bg-brand/25 blur-[80px]" />
+        <div className="relative flex items-center gap-2.5">
+          <LogoMark size={30} />
+          <span className="text-[19px] font-semibold tracking-tight1">Rehearsly</span>
+          <span className="ml-1 rounded-full bg-lime px-2 py-1 font-mono text-[10px] uppercase tracking-mono text-ink">Admin</span>
         </div>
 
-        {/* Login card */}
-        <div className="bg-[#0f0f1e]/90 backdrop-blur-xl border border-white/10 rounded-2xl p-8 shadow-2xl">
-
-          {/* Logo / Title */}
-          <div className="text-center mb-8">
-            <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-red-500 to-orange-500 flex items-center justify-center mx-auto mb-4 shadow-lg shadow-red-500/20">
-              <Shield size={26} className="text-white" />
-            </div>
-            <h1 className="text-2xl font-bold text-white">Admin Dashboard</h1>
-            <p className="text-slate-400 text-sm mt-1">Sign in with your admin credentials</p>
-          </div>
-
-          {/* Error banner */}
-          {formError && (
-            <div className="flex items-start gap-2.5 px-4 py-3 rounded-xl bg-red-500/10 border border-red-500/20 mb-5">
-              <AlertCircle size={16} className="text-red-400 flex-shrink-0 mt-0.5" />
-              <p className="text-red-300 text-sm">{formError}</p>
-            </div>
-          )}
-
-          {/* Form */}
-          <form onSubmit={handleSubmit} className="space-y-4" id="admin-login-form">
-
-            {/* Email */}
-            <div>
-              <label htmlFor="admin-email" className="form-label">Admin Email</label>
-              <div className="relative">
-                <Mail size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
-                <input
-                  id="admin-email"
-                  type="email"
-                  name="email"
-                  value={form.email}
-                  onChange={handleChange}
-                  placeholder="admin@interviewmaster.com"
-                  className="form-input pl-10"
-                  autoComplete="email"
-                  autoFocus
-                  required
-                />
+        <div className="relative hidden flex-1 flex-col justify-center gap-3 py-10 lg:flex">
+          {[
+            ['Platform health', 'Sign-ups, sessions and revenue at a glance'],
+            ['Content & jobs', 'Plans, prompts, job board and scraper controls'],
+            ['Audit trail', 'Every privileged action is logged'],
+          ].map(([t, d], i) => (
+            <div key={t} className="flex max-w-[380px] items-start gap-3 rounded-r18 border border-ink-line bg-ink-2 px-4 py-3.5" style={{ marginLeft: i * 28 }}>
+              <span className="mt-1 h-2 w-2 flex-shrink-0 rounded-full bg-lime" />
+              <div>
+                <p className="text-[15px] font-medium">{t}</p>
+                <p className="mt-0.5 text-[13px] text-on-dark">{d}</p>
               </div>
             </div>
+          ))}
+        </div>
 
-            {/* Password */}
-            <div>
-              <label htmlFor="admin-password" className="form-label">Password</label>
-              <div className="relative">
-                <Lock size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
-                <input
-                  id="admin-password"
-                  type={showPass ? 'text' : 'password'}
-                  name="password"
-                  value={form.password}
-                  onChange={handleChange}
-                  placeholder="Enter admin password"
-                  className="form-input pl-10 pr-10"
-                  autoComplete="current-password"
-                  required
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPass(!showPass)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 transition-colors"
-                  tabIndex={-1}
-                  aria-label={showPass ? 'Hide password' : 'Show password'}
-                >
-                  {showPass ? <EyeOff size={16} /> : <Eye size={16} />}
-                </button>
-              </div>
-            </div>
+        <p className="relative mt-10 max-w-[440px] text-[26px] font-medium leading-[1.1] tracking-[-0.035em] lg:mt-0 lg:text-[clamp(26px,2.6vw,36px)]">
+          Run the practice platform behind every better answer.
+        </p>
+      </section>
 
-            {/* Submit */}
-            <button
-              id="admin-login-btn"
-              type="submit"
-              disabled={isLoading}
-              className="w-full flex items-center justify-center gap-2 px-6 py-3 rounded-xl
-                         bg-gradient-to-r from-red-600 to-orange-600 text-white font-semibold text-sm
-                         shadow-lg shadow-red-500/20 hover:from-red-500 hover:to-orange-500
-                         active:scale-95 transition-all duration-200 disabled:opacity-60 disabled:cursor-not-allowed mt-2"
-            >
-              {isLoading ? (
-                <>
-                  <Loader2 size={16} className="animate-spin" />
-                  Authenticating…
-                </>
-              ) : (
-                <>
-                  <Shield size={16} />
-                  Sign In as Admin
-                </>
-              )}
-            </button>
+      <section className="flex flex-col px-5 py-6 sm:px-[clamp(20px,5vw,72px)] sm:py-7">
+        <div className="flex items-center justify-between gap-3">
+          <Link to="/" className="py-2 font-mono text-[11.5px] uppercase tracking-mono text-muted hover:text-ink">← Back to site</Link>
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-stone px-3 py-[7px] font-mono text-[10.5px] uppercase tracking-mono text-muted">
+            <ShieldCheck size={13} aria-hidden="true" /> Restricted
+          </span>
+        </div>
+
+        <div className="mx-auto flex w-full max-w-[420px] flex-1 flex-col justify-center py-10 sm:py-12">
+          <h1 className="text-[40px] font-medium leading-none tracking-tight2 sm:text-[44px]">Admin sign in</h1>
+          <p className="mt-3 text-[16px] leading-normal text-muted-strong">Use your administrator account. Candidate accounts can’t access the console.</p>
+
+          <form onSubmit={handleSubmit(onSubmit)} noValidate className="mt-8 flex flex-col gap-3.5" id="admin-login-form">
+            {serverError && <Alert tone="error" icon={AlertCircle}>{serverError}</Alert>}
+            <Field label="Admin email" error={errors.email?.message}>
+              <Input
+                type="email"
+                size="lg"
+                autoComplete="email"
+                autoFocus
+                placeholder="admin@company.com"
+                {...register('email', {
+                  required: 'Enter your admin email',
+                  pattern: { value: /^\S+@\S+\.\S+$/, message: 'Enter a valid email address' },
+                })}
+              />
+            </Field>
+            <Field label="Password" error={errors.password?.message}>
+              <PasswordInput size="lg" autoComplete="current-password" placeholder="Your admin password" {...register('password', { required: 'Enter your password' })} />
+            </Field>
+            <Button type="submit" variant="ink" cta disabled={isSubmitting} className="mt-2 w-full py-[6px] text-[12.5px] [&_.btn-cta-disc]:bg-lime [&_.btn-cta-disc]:text-ink">
+              {isSubmitting ? 'Checking…' : 'Sign in to console'}
+            </Button>
           </form>
 
-          {/* Security notice */}
-          <p className="text-center text-slate-600 text-xs mt-6">
-            This panel is restricted to authorized administrators only.
-            <br />Unauthorized access is monitored and logged.
+          <p className="mt-[22px] text-[12.5px] leading-[1.55] text-muted-2">
+            Access is limited to authorised administrators and every privileged action is recorded in the audit log.
           </p>
         </div>
-
-        {/* Back to main site */}
-        <p className="text-center mt-4">
-          <a href="/" className="text-slate-500 text-xs hover:text-slate-300 transition-colors">
-            ← Back to main site
-          </a>
-        </p>
-      </div>
+      </section>
     </div>
   );
 }

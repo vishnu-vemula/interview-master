@@ -10,16 +10,20 @@ export const userAPI = {
   getProfile: () => api.get('/users/profile'),
   updateProfile: (data) => api.put('/users/profile', data),
   changePassword: (data) => api.put('/users/change-password', data),
+  deleteAccount: (currentPassword) => api.delete('/users/account', { data: { currentPassword } }),
   getDashboard: () => api.get('/users/dashboard'),
 };
 
 // ── Resume ─────────────────────────────────────────────────────────
 export const resumeAPI = {
-  upload: (formData) =>
+  upload: (formData, onUploadProgress) =>
     api.post('/resumes/upload', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 120_000, // upload + text extraction + AI parsing
+      onUploadProgress,
     }),
   getAll: () => api.get('/resumes'),
+  download: (id) => api.get(`/resumes/${id}/download`),
   delete: (id) => api.delete(`/resumes/${id}`),
   setDefault: (id) => api.patch(`/resumes/${id}/default`),
   parse: (id, jobDescription = '') =>
@@ -53,5 +57,4 @@ export const jobsAPI = {
   getById: (id) => api.get(`/jobs/${id}`),
   getCategories: () => api.get('/jobs/categories'),
   getRecommended: () => api.get('/jobs/recommended'),
-  generateQuestionsDirect: (data) => api.post('/jobs/generate-questions', data),
 };

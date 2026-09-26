@@ -1,147 +1,68 @@
 /**
- * components/admin/topbar/UserMenu.jsx
- *
- * Admin user menu dropdown triggered by clicking the avatar.
- * Features:
- *  - Shows admin name, email, role badge
- *  - Quick links: Profile, Settings
- *  - Logout with spinner
- *  - Closes on outside click
- *
- * Reads admin data from AdminAuthContext.
+ * UserMenu — admin avatar menu (profile summary, settings, log out).
  */
 
-import { useState, useRef, useEffect } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Crown, Settings, LogOut, ChevronDown, Shield, User } from 'lucide-react';
+import { ChevronDown, Crown, LogOut, Settings, Shield } from 'lucide-react';
 import { useAdminAuth } from '@/context';
+import { Dropdown, MenuItem, Pill } from '@/components/ui';
+import { cn } from '@/utils';
+
+const ROLE_LABELS = { super_admin: 'Super admin', admin: 'Admin', support: 'Support', content_manager: 'Content manager' };
 
 export default function UserMenu() {
-  const [open, setOpen]         = useState(false);
-  const [loggingOut, setLogout] = useState(false);
-  const dropdownRef             = useRef(null);
-  const navigate                = useNavigate();
-
-  const { admin, isSuperAdmin, adminRole, adminLogout } = useAdminAuth();
-
-  // Close on outside click
-  useEffect(() => {
-    const handler = (e) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target)) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, []);
+  const [loggingOut, setLoggingOut] = useState(false);
+  const navigate = useNavigate();
+  const { admin, isSuperAdmin, adminRole, adminLogout, hasPermission } = useAdminAuth();
+  const initial = admin?.name?.[0]?.toUpperCase() ?? 'A';
 
   const handleLogout = async () => {
-    setLogout(true);
+    setLoggingOut(true);
     await adminLogout();
     navigate('/admin/login');
   };
 
-  const initial = admin?.name?.[0]?.toUpperCase() ?? 'A';
-
   return (
-    <div className="relative" ref={dropdownRef}>
-
-      {/* Trigger button */}
-      <button
-        id="admin-user-menu-btn"
-        onClick={() => setOpen(!open)}
-        className="flex items-center gap-2.5 pl-2 pr-3 py-1.5 rounded-xl
-                   bg-white/5 border border-white/8 hover:bg-white/10 hover:border-white/15
-                   transition-all duration-200 group"
-        aria-label="Admin user menu"
-      >
-        {/* Avatar */}
-        <div className="w-7 h-7 rounded-full bg-gradient-to-br from-red-500 to-orange-500
-                        flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
-          {initial}
-        </div>
-
-        {/* Name + role (hidden on small screens) */}
-        <div className="hidden sm:block text-left min-w-0">
-          <p className="text-white text-xs font-semibold truncate max-w-[100px]">
-            {admin?.name ?? 'Admin'}
-          </p>
-          <p className={`text-[10px] font-medium ${isSuperAdmin ? 'text-amber-400' : 'text-red-400'}`}>
-            {isSuperAdmin ? 'Super Admin' : 'Admin'}
-          </p>
-        </div>
-
-        <ChevronDown
-          size={13}
-          className={`text-slate-500 transition-transform duration-200 ${open ? 'rotate-180' : ''}`}
-        />
-      </button>
-
-      {/* Dropdown */}
-      {open && (
-        <div className="
-          absolute right-0 top-full mt-2 w-60
-          bg-[#12122a] border border-white/10 rounded-2xl shadow-2xl
-          overflow-hidden z-50
-        ">
-          {/* Profile header */}
-          <div className="px-4 py-4 border-b border-white/8">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-full bg-gradient-to-br from-red-500 to-orange-500
-                              flex items-center justify-center text-white text-sm font-bold flex-shrink-0">
-                {initial}
-              </div>
-              <div className="min-w-0">
-                <p className="text-white text-sm font-semibold truncate">{admin?.name}</p>
-                <p className="text-slate-500 text-xs truncate">{admin?.email}</p>
-              </div>
-            </div>
-
-            {/* Role badge */}
-            <div className="mt-3">
-              {isSuperAdmin ? (
-                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full
-                                 bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs font-semibold">
-                  <Crown size={10} />
-                  Super Admin
-                </span>
-              ) : (
-                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full
-                                 bg-red-500/10 border border-red-500/20 text-red-400 text-xs font-semibold">
-                  <Shield size={10} />
-                  Admin
-                </span>
-              )}
-            </div>
+    <Dropdown
+      trigger={({ toggle, open }) => (
+        <button
+          type="button"
+          onClick={toggle}
+          aria-expanded={open}
+          aria-label="Admin account menu"
+          className="flex items-center gap-2.5 rounded-full border border-line bg-white py-1 pl-1 pr-3 transition-colors hover:border-ink"
+        >
+          <span className="grid h-8 w-8 place-items-center rounded-full bg-ink text-[13px] font-medium text-lime">{initial}</span>
+          <span className="hidden text-left sm:block">
+            <span className="block max-w-[120px] truncate text-[13px] font-medium leading-tight">{admin?.name ?? 'Admin'}</span>
+            <span className="block font-mono text-[10px] uppercase tracking-mono text-muted">{ROLE_LABELS[adminRole] ?? 'Admin'}</span>
+          </span>
+          <ChevronDown size={14} className={cn('text-muted transition-transform', open && 'rotate-180')} />
+        </button>
+      )}
+    >
+      {({ close }) => (
+        <div>
+          <div className="border-b border-line-2 px-4 py-4">
+            <p className="truncate text-[14px] font-medium">{admin?.name}</p>
+            <p className="truncate text-[12.5px] text-muted">{admin?.email}</p>
+            <Pill tone={isSuperAdmin ? 'lime' : 'stone'} mono icon={isSuperAdmin ? Crown : Shield} className="mt-3">
+              {ROLE_LABELS[adminRole] ?? 'Admin'}
+            </Pill>
           </div>
-
-          {/* Menu items */}
-          <div className="p-1.5">
-            <button
-              onClick={() => { navigate('/admin/settings'); setOpen(false); }}
-              className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl
-                         text-slate-400 hover:text-white hover:bg-white/5
-                         text-sm transition-all duration-150"
-            >
-              <Settings size={15} />
-              Settings
-            </button>
-
-            <div className="border-t border-white/8 mt-1 pt-1">
-              <button
-                onClick={handleLogout}
-                disabled={loggingOut}
-                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl
-                           text-slate-400 hover:text-red-400 hover:bg-red-500/10
-                           text-sm transition-all duration-150 disabled:opacity-60"
-              >
-                <LogOut size={15} />
-                {loggingOut ? 'Logging out…' : 'Logout'}
-              </button>
-            </div>
+          <div className="py-1.5">
+            {hasPermission('view:settings') && (
+              <MenuItem icon={Settings} onClick={() => { close(); navigate('/admin/settings'); }}>
+                Settings
+              </MenuItem>
+            )}
+            <MenuItem icon={LogOut} tone="danger" onClick={handleLogout} disabled={loggingOut}>
+              {loggingOut ? 'Logging out…' : 'Log out'}
+            </MenuItem>
           </div>
         </div>
       )}
-    </div>
+    </Dropdown>
   );
 }

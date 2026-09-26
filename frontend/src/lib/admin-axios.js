@@ -13,6 +13,8 @@
  */
 
 import axios from 'axios';
+import { auth, firebaseMode, getFirebaseToken } from './firebase';
+import { signOut } from 'firebase/auth';
 
 const STORAGE_KEY = 'ai-admin-auth';
 const BASE_URL    = import.meta.env.VITE_API_URL || '/api';
@@ -49,7 +51,12 @@ export const clearAdminAuth = () => {
 
 // ─── Request Interceptor: attach Bearer token ─────────────────────
 adminApi.interceptors.request.use(
-  (config) => {
+  async (config) => {
+    if (firebaseMode) {
+      const token = await getFirebaseToken();
+      if (token) config.headers.Authorization = `Bearer ${token}`;
+      return config;
+    }
     const { accessToken } = getAdminAuth();
     if (accessToken) {
       config.headers.Authorization = `Bearer ${accessToken}`;
@@ -74,7 +81,28 @@ adminApi.interceptors.response.use(
   async (error) => {
     const originalRequest = error.config;
 
-    if (error.response?.status !== 401 || originalRequest._retry) {
+    if (firebaseMode) {
+      if (error.response?.status !== 401 || !originalRequest || originalRequest._retry) {
+        return Promise.reject(error);
+      }
+      originalRequest._retry = true;
+      try {
+        const token = await getFirebaseToken(true);
+        if (!token) throw error;
+        originalRequest.headers.Authorization = `Bearer ${token}`;
+        return adminApi(originalRequest);
+      } catch {
+        await signOut(auth).catch(() => {});
+        return Promise.reject(error);
+      }
+    }
+
+    if (
+      error.response?.status !== 401 ||
+      !originalRequest ||
+      originalRequest._retry ||
+      /\/admin\/auth\/(login|refresh|logout)/.test(originalRequest.url || '')
+    ) {
       return Promise.reject(error);
     }
 
@@ -105,6 +133,7 @@ adminApi.interceptors.response.use(
       const newToken = data.accessToken;
 
       setAdminAccessToken(newToken);
+      window.dispatchEvent(new CustomEvent('admin:token-refreshed', { detail: { accessToken: newToken } }));
       processQueue(null, newToken);
       originalRequest.headers.Authorization = `Bearer ${newToken}`;
       return adminApi(originalRequest);

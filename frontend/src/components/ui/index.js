@@ -1,12 +1,13 @@
 /**
- * components/ui/index.js — Barrel for shared UI primitives
- *
- * Export shared, reusable UI atoms here as they are built:
- *   export { default as Button  } from './Button';
- *   export { default as Input   } from './Input';
- *   export { default as Badge   } from './Badge';
- *   export { default as Spinner } from './Spinner';
- *   export { default as Modal   } from './Modal';
+ * components/ui — Rehearsly design-system primitives.
+ * Class-level tokens live in src/index.css (@layer components) and tailwind.config.js.
  */
-
-// No components yet — add exports here as components are built.
+export { default as Button } from './button';
+export { default as Spinner } from './spinner';
+export { default as Logo, LogoMark } from './logo';
+export { Field, Input, Textarea, Select, PasswordInput, Switch, Checkbox } from './field';
+export { Pill, Eyebrow, Card, PageHeader, StatTile, ProgressBar, Avatar, ScorePill } from './display';
+export { Skeleton, SkeletonList, LoadingState, EmptyState, ErrorState, Alert } from './states';
+export { Modal, Drawer, ConfirmProvider, useConfirm, Dropdown, MenuItem } from './overlay';
+export { Segmented, Pagination, TableShell } from './navigation';
+export { CHART, ChartTooltip } from './chart';

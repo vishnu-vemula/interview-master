@@ -1,73 +1,28 @@
 /**
- * components/admin/topbar/AdminTopbar.jsx
- *
- * The top navigation bar of the admin panel.
- * Composed of:
- *  - Left: Mobile hamburger menu + Breadcrumb
- *  - Right: Dark mode toggle + NotificationDropdown + UserMenu
- *
- * Props:
- *  onMenuClick  — fn       — called when hamburger is clicked (mobile)
- *  darkMode     — boolean  — current dark mode state
- *  onDarkToggle — fn       — toggles dark mode
+ * AdminTopbar — mobile menu button + breadcrumb on the left; notifications + account on the right.
  */
 
-import { Menu, Sun, Moon } from 'lucide-react';
-import Breadcrumb            from './breadcrumb';
-import NotificationDropdown  from './notification-dropdown';
-import UserMenu              from './user-menu';
+import { Menu } from 'lucide-react';
+import Breadcrumb from './breadcrumb';
+import NotificationDropdown from './notification-dropdown';
+import UserMenu from './user-menu';
 
-export default function AdminTopbar({ onMenuClick, darkMode, onDarkToggle }) {
+export default function AdminTopbar({ onMenuClick }) {
   return (
-    <header className="
-      flex items-center justify-between
-      px-4 lg:px-6 h-16 flex-shrink-0
-      bg-[#0c0c1d]/90 backdrop-blur-md
-      border-b border-white/[0.07]
-    ">
-
-      {/* ── Left section ──────────────────────────────────────── */}
-      <div className="flex items-center gap-3">
-        {/* Mobile hamburger */}
+    <header className="sticky top-0 z-30 flex h-[68px] flex-shrink-0 items-center justify-between gap-3 border-b border-line bg-paper/90 px-4 backdrop-blur-md lg:px-8">
+      <div className="flex min-w-0 items-center gap-3">
         <button
-          id="admin-mobile-menu-btn"
+          type="button"
           onClick={onMenuClick}
-          className="lg:hidden w-9 h-9 rounded-xl bg-white/5 border border-white/8
-                     flex items-center justify-center text-slate-400
-                     hover:text-white hover:bg-white/10 transition-all"
-          aria-label="Open sidebar"
+          aria-label="Open admin menu"
+          className="grid h-10 w-10 flex-shrink-0 place-items-center rounded-full border border-line bg-white text-ink lg:hidden"
         >
           <Menu size={18} />
         </button>
-
-        {/* Breadcrumb */}
         <Breadcrumb />
       </div>
-
-      {/* ── Right section ─────────────────────────────────────── */}
-      <div className="flex items-center gap-2">
-
-        {/* Dark mode toggle */}
-        <button
-          id="admin-dark-mode-btn"
-          onClick={onDarkToggle}
-          className="w-9 h-9 rounded-xl bg-white/5 border border-white/8
-                     flex items-center justify-center text-slate-400
-                     hover:text-white hover:bg-white/10 hover:border-white/15
-                     transition-all duration-200"
-          aria-label={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
-          title={darkMode ? 'Light mode' : 'Dark mode'}
-        >
-          {darkMode
-            ? <Sun size={16} className="text-amber-400" />
-            : <Moon size={16} />
-          }
-        </button>
-
-        {/* Notification bell */}
+      <div className="flex flex-shrink-0 items-center gap-2">
         <NotificationDropdown />
-
-        {/* User menu */}
         <UserMenu />
       </div>
     </header>

@@ -1,322 +1,391 @@
-import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
-import { motion, AnimatePresence } from 'framer-motion';
-import {
-  Briefcase, FileText, Sliders, Sparkles,
-  Loader2, ChevronRight, ChevronLeft, Check
-} from 'lucide-react';
-import { interviewAPI, resumeAPI } from '@/services/api';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { AlertCircle, ArrowLeft, ArrowRight, Check, FileText, Sparkles, Upload } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { useEffect } from 'react';
+import { interviewAPI, resumeAPI } from '@/services/api';
+import { EXPERIENCE_LEVELS, QUESTION_TYPES } from '@/constants';
+import { BILLING_ME_KEY, useBillingMe } from '@/hooks/use-billing';
+import { Alert, Button, Card, Field, Input, PageHeader, Pill, Skeleton, Textarea } from '@/components/ui';
+import { cn, getErrorMessage } from '@/utils';
 
-const STEPS = ['Job Details', 'Preferences', 'Resume', 'Review'];
+const STEPS = ['Role', 'Preferences', 'Resume', 'Review'];
+const JD_MIN = 50;
+const JD_MAX = 5000;
 
-const EXPERIENCE_LEVELS = [
-  { value: 'entry',     label: 'Entry Level',  sub: '0–2 years' },
-  { value: 'mid',       label: 'Mid Level',    sub: '3–5 years' },
-  { value: 'senior',    label: 'Senior',       sub: '5–8 years' },
-  { value: 'lead',      label: 'Lead / Staff', sub: '8+ years'  },
-  { value: 'executive', label: 'Executive',    sub: 'C-Suite'   },
-];
-
-const QUESTION_TYPES = [
-  { value: 'technical',   label: 'Technical',     color: 'brand' },
-  { value: 'behavioral',  label: 'Behavioral',    color: 'violet' },
-  { value: 'situational', label: 'Situational',   color: 'emerald' },
-  { value: 'hr',          label: 'HR',            color: 'amber' },
-  { value: 'culture_fit', label: 'Culture Fit',   color: 'rose' },
-];
+function StepIndicator({ step }) {
+  return (
+    <ol className="flex flex-wrap items-center gap-2" aria-label="Progress">
+      {STEPS.map((label, i) => {
+        const done = i < step;
+        const current = i === step;
+        return (
+          <li key={label} className="flex items-center gap-2" aria-current={current ? 'step' : undefined}>
+            <span
+              className={cn(
+                'flex items-center gap-2 rounded-full py-1.5 pl-1.5 pr-3.5 font-mono text-[11px] uppercase tracking-mono transition-colors',
+                current ? 'bg-ink text-white' : done ? 'bg-lime text-ink' : 'bg-stone text-muted',
+              )}
+            >
+              <span className={cn('grid h-6 w-6 place-items-center rounded-full text-[10.5px]', current ? 'bg-lime text-ink' : done ? 'bg-ink text-lime' : 'bg-white text-muted')}>
+                {done ? <Check size={12} /> : i + 1}
+              </span>
+              {label}
+            </span>
+            {i < STEPS.length - 1 && <span className="hidden h-px w-5 bg-line sm:block" aria-hidden="true" />}
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
 
 export default function NewInterviewPage() {
   const navigate = useNavigate();
+  const { state } = useLocation();
+  const prefill = state?.prefill; // from the job board / recommendations ("Practice for this role")
+  const queryClient = useQueryClient();
   const [step, setStep] = useState(0);
-  const [resumes, setResumes] = useState([]);
   const [selectedResume, setSelectedResume] = useState(null);
   const [selectedTypes, setSelectedTypes] = useState(['technical', 'behavioral']);
   const [experienceLevel, setExperienceLevel] = useState('mid');
-  const [isCreating, setIsCreating] = useState(false);
-  const [isGenerating, setIsGenerating] = useState(false);
+  const [phase, setPhase] = useState('idle'); // idle | creating | generating
+  const [createdId, setCreatedId] = useState(null);
+  const [submitError, setSubmitError] = useState(null); // { message, status }
 
-  const { register, handleSubmit, watch, formState: { errors } } = useForm({
-    defaultValues: { numberOfQuestions: 10 }
+  const { register, handleSubmit, watch, trigger, formState: { errors } } = useForm({
+    mode: 'onTouched',
+    defaultValues: {
+      jobTitle: prefill?.jobTitle || '',
+      company: prefill?.company || '',
+      jobDescription: (prefill?.jobDescription || '').slice(0, JD_MAX),
+      numberOfQuestions: 8,
+    },
   });
+  const [jobTitle, company, jobDescription, numberOfQuestions] = watch(['jobTitle', 'company', 'jobDescription', 'numberOfQuestions']);
 
-  const jobTitle = watch('jobTitle');
-  const jobDescription = watch('jobDescription');
-  const company = watch('company');
-  const numberOfQuestions = watch('numberOfQuestions');
+  const resumesQuery = useQuery({ queryKey: ['resumes'], queryFn: () => resumeAPI.getAll().then((r) => r.data.resumes || []) });
+  const resumes = resumesQuery.data || [];
+  const billing = useBillingMe();
+  const allowance = billing.data?.allowance;
 
+  // Preselect the default resume once resumes load.
   useEffect(() => {
-    resumeAPI.getAll().then(({ data }) => setResumes(data.resumes || []));
-  }, []);
+    if (selectedResume === null && resumes.length) {
+      const def = resumes.find((r) => r.isDefault);
+      if (def) setSelectedResume(def._id);
+    }
+  }, [resumes]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const toggleType = (type) => {
-    setSelectedTypes((prev) =>
-      prev.includes(type)
-        ? prev.length > 1 ? prev.filter((t) => t !== type) : prev
-        : [...prev, type]
-    );
+    setSelectedTypes((prev) => (prev.includes(type) ? (prev.length > 1 ? prev.filter((t) => t !== type) : prev) : [...prev, type]));
+  };
+
+  const next = async () => {
+    if (step === 0) {
+      const ok = await trigger(['jobTitle', 'jobDescription', 'company']);
+      if (!ok) return;
+    }
+    setStep((s) => Math.min(s + 1, STEPS.length - 1));
+  };
+
+  const generate = async (interviewId) => {
+    setPhase('generating');
+    const toastId = toast.loading('Writing questions from your resume and the role…');
+    try {
+      await interviewAPI.generateQuestions(interviewId);
+      toast.success('Your interview is ready', { id: toastId });
+      queryClient.invalidateQueries({ queryKey: BILLING_ME_KEY });
+      queryClient.invalidateQueries({ queryKey: ['interviews'] });
+      navigate(`/interviews/${interviewId}/session`);
+    } catch (err) {
+      toast.dismiss(toastId);
+      setSubmitError({ message: getErrorMessage(err, 'Question generation failed. Please retry.'), status: err.response?.status });
+      setPhase('idle');
+    }
   };
 
   const onSubmit = async (formData) => {
-    setIsCreating(true);
+    setSubmitError(null);
+    if (createdId) return generate(createdId); // retry generation without creating a duplicate
+    setPhase('creating');
     try {
-      // Step 1: Create interview
-      const { data: createData } = await interviewAPI.create({
-        ...formData,
+      const { data } = await interviewAPI.create({
+        jobTitle: formData.jobTitle.trim(),
+        company: formData.company.trim() || undefined,
+        jobDescription: formData.jobDescription.trim(),
+        numberOfQuestions: Number(formData.numberOfQuestions),
         experienceLevel,
         questionTypes: selectedTypes,
         resumeId: selectedResume,
       });
-      const interviewId = createData.interview._id;
-
-      // Step 2: Generate questions
-      setIsGenerating(true);
-      toast.loading('AI is generating your questions...', { id: 'gen' });
-
-      await interviewAPI.generateQuestions(interviewId);
-
-      toast.success(`Questions ready! Let's go 🚀`, { id: 'gen' });
-      navigate(`/interviews/${interviewId}/session`);
+      setCreatedId(data.interview._id);
+      queryClient.invalidateQueries({ queryKey: ['interviews'] });
+      await generate(data.interview._id);
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Failed to create interview', { id: 'gen' });
-    } finally {
-      setIsCreating(false);
-      setIsGenerating(false);
+      setSubmitError({ message: getErrorMessage(err, 'Couldn’t create the interview'), status: err.response?.status });
+      setPhase('idle');
+      if (err.response?.status === 400) setStep(0);
     }
   };
 
-  const canProceed = () => {
-    if (step === 0) return jobTitle?.trim().length > 0 && jobDescription?.trim().length >= 50;
-    return true;
-  };
+  const busy = phase !== 'idle';
+  const selectedResumeDoc = resumes.find((r) => r._id === selectedResume);
+  const jdLength = jobDescription?.trim().length ?? 0;
 
   return (
-    <div className="max-w-2xl mx-auto animate-fade-in">
-      {/* Step indicator */}
-      <div className="flex items-center gap-2 mb-8">
-        {STEPS.map((label, i) => (
-          <div key={label} className="flex items-center gap-2 flex-1">
-            <div className={`flex items-center justify-center w-8 h-8 rounded-full text-xs font-bold transition-all duration-300
-              ${i < step ? 'bg-emerald-500 text-white' : i === step ? 'bg-brand-500 text-white shadow-glow' : 'bg-surface-border text-slate-500'}`}>
-              {i < step ? <Check className="w-4 h-4" /> : i + 1}
-            </div>
-            <span className={`text-xs font-medium hidden sm:block ${i === step ? 'text-white' : 'text-slate-500'}`}>{label}</span>
-            {i < STEPS.length - 1 && (
-              <div className={`flex-1 h-0.5 rounded-full ${i < step ? 'bg-emerald-500' : 'bg-surface-border'}`} />
-            )}
-          </div>
-        ))}
-      </div>
+    <div className="space-y-8 animate-fade-in">
+      <PageHeader
+        eyebrow="New interview"
+        title="Build an interview for one role"
+        description="Paste the job description, pick what to practise, and we’ll ground every question in your resume."
+      />
 
-      <form onSubmit={handleSubmit(onSubmit)}>
-        <AnimatePresence mode="wait">
-          {/* ── Step 0: Job Details ──────────────────────── */}
-          {step === 0 && (
-            <motion.div key="step0"
-              initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}
-              className="card p-8 space-y-5"
-            >
-              <div className="flex items-center gap-3 mb-2">
-                <div className="p-2 bg-brand-600/20 rounded-xl"><Briefcase className="w-5 h-5 text-brand-400" /></div>
-                <h3 className="text-xl font-display font-bold text-white">Job Details</h3>
-              </div>
+      <StepIndicator step={step} />
 
-              <div>
-                <label className="form-label">Job Title *</label>
-                <input type="text" className="form-input" placeholder="e.g. Senior React Developer"
-                  {...register('jobTitle', { required: 'Job title is required' })} />
-                {errors.jobTitle && <p className="form-error">{errors.jobTitle.message}</p>}
-              </div>
+      {prefill && step === 0 && (
+        <Alert tone="info" icon={Sparkles}>
+          We filled in the role from the job listing. Paste the full description if you have it — listings are often summarised.
+        </Alert>
+      )}
 
-              <div>
-                <label className="form-label">Company (optional)</label>
-                <input type="text" className="form-input" placeholder="e.g. Google, Microsoft..."
-                  {...register('company')} />
-              </div>
-
-              <div>
-                <label className="form-label">
-                  Job Description *
-                  <span className="text-slate-500 font-normal ml-2 text-xs">
-                    (min. 50 chars — {jobDescription?.length ?? 0}/5000)
-                  </span>
-                </label>
-                <textarea className="form-textarea h-40" placeholder="Paste the full job description here. The more detail, the better the questions..."
-                  {...register('jobDescription', {
-                    required: 'Job description is required',
-                    minLength: { value: 50, message: 'Please provide at least 50 characters' },
-                  })}
-                />
-                {errors.jobDescription && <p className="form-error">{errors.jobDescription.message}</p>}
-              </div>
-            </motion.div>
-          )}
-
-          {/* ── Step 1: Preferences ──────────────────────── */}
-          {step === 1 && (
-            <motion.div key="step1"
-              initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}
-              className="card p-8 space-y-6"
-            >
-              <div className="flex items-center gap-3 mb-2">
-                <div className="p-2 bg-brand-600/20 rounded-xl"><Sliders className="w-5 h-5 text-brand-400" /></div>
-                <h3 className="text-xl font-display font-bold text-white">Preferences</h3>
-              </div>
-
-              <div>
-                <label className="form-label">Experience Level</label>
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mt-2">
-                  {EXPERIENCE_LEVELS.map(({ value, label, sub }) => (
-                    <button key={value} type="button"
-                      onClick={() => setExperienceLevel(value)}
-                      className={`p-3 rounded-xl border text-left transition-all duration-200 ${
-                        experienceLevel === value
-                          ? 'border-brand-500 bg-brand-600/20 text-white'
-                          : 'border-surface-border bg-surface hover:border-slate-500 text-slate-400'
-                      }`}
-                    >
-                      <p className="text-sm font-semibold">{label}</p>
-                      <p className="text-xs text-slate-500 mt-0.5">{sub}</p>
-                    </button>
-                  ))}
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_340px]">
+        <form
+          noValidate
+          onSubmit={(e) => {
+            // Enter in an earlier step advances the wizard instead of generating.
+            if (step < STEPS.length - 1) { e.preventDefault(); next(); return; }
+            handleSubmit(onSubmit)(e);
+          }}
+        >
+          <Card className="p-6 sm:p-8">
+            {step === 0 && (
+              <div className="space-y-5 animate-fade-in">
+                <div>
+                  <h2 className="text-[24px] font-medium tracking-tight3">The role</h2>
+                  <p className="mt-1 text-[14.5px] text-muted">The more of the job description you paste, the sharper the questions.</p>
                 </div>
-              </div>
-
-              <div>
-                <label className="form-label">Question Types <span className="text-slate-500 text-xs">(select all that apply)</span></label>
-                <div className="flex flex-wrap gap-2 mt-2">
-                  {QUESTION_TYPES.map(({ value, label }) => (
-                    <button key={value} type="button"
-                      onClick={() => toggleType(value)}
-                      className={`px-4 py-2 rounded-full text-sm font-medium border transition-all ${
-                        selectedTypes.includes(value)
-                          ? 'bg-brand-600/30 border-brand-500 text-brand-300'
-                          : 'border-surface-border text-slate-400 hover:border-slate-500'
-                      }`}
-                    >
-                      {selectedTypes.includes(value) && <Check className="w-3 h-3 inline mr-1" />}
-                      {label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div>
-                <label className="form-label">Number of Questions: <span className="text-brand-400 font-bold">{numberOfQuestions}</span></label>
-                <input type="range" min="3" max="20" step="1" className="w-full accent-brand-500 mt-2"
-                  {...register('numberOfQuestions', { valueAsNumber: true })} />
-                <div className="flex justify-between text-xs text-slate-500 mt-1"><span>3</span><span>20</span></div>
-              </div>
-            </motion.div>
-          )}
-
-          {/* ── Step 2: Resume ────────────────────────────── */}
-          {step === 2 && (
-            <motion.div key="step2"
-              initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}
-              className="card p-8 space-y-4"
-            >
-              <div className="flex items-center gap-3 mb-2">
-                <div className="p-2 bg-emerald-600/20 rounded-xl"><FileText className="w-5 h-5 text-emerald-400" /></div>
-                <h3 className="text-xl font-display font-bold text-white">Select Resume <span className="text-slate-500 text-sm font-normal">(optional)</span></h3>
-              </div>
-              <p className="text-slate-400 text-sm">Linking a resume helps AI generate more personalized questions based on your experience.</p>
-
-              <div className="space-y-2">
-                <button type="button"
-                  onClick={() => setSelectedResume(null)}
-                  className={`w-full p-4 rounded-xl border text-left transition-all ${
-                    !selectedResume ? 'border-brand-500 bg-brand-600/20' : 'border-surface-border bg-surface hover:border-slate-500'
-                  }`}
+                <Field label="Job title" required error={errors.jobTitle?.message}>
+                  <Input
+                    placeholder="e.g. Product Analyst"
+                    {...register('jobTitle', {
+                      validate: (v) => v.trim().length > 0 || 'Enter the job title',
+                      maxLength: { value: 120, message: 'Keep the title under 120 characters' },
+                    })}
+                  />
+                </Field>
+                <Field label="Company" hint="Optional" error={errors.company?.message}>
+                  <Input placeholder="e.g. a fintech startup" {...register('company', { maxLength: { value: 120, message: 'Keep it under 120 characters' } })} />
+                </Field>
+                <Field
+                  label="Job description"
+                  required
+                  error={errors.jobDescription?.message}
+                  labelRight={<span className={cn('font-mono text-[11px] tabular', jdLength < JD_MIN ? 'text-muted' : 'text-lime-ok')}>{jdLength}/{JD_MAX}</span>}
+                  hint={`Paste at least ${JD_MIN} characters.`}
                 >
-                  <p className="text-sm font-medium text-white">No resume — generic questions</p>
-                  <p className="text-xs text-slate-500 mt-1">AI generates questions based on job description only</p>
-                </button>
+                  <Textarea
+                    rows={9}
+                    maxLength={JD_MAX}
+                    placeholder="Paste the full job description — responsibilities, requirements, nice-to-haves…"
+                    {...register('jobDescription', {
+                      validate: (v) => v.trim().length >= JD_MIN || `Paste at least ${JD_MIN} characters of the job description`,
+                    })}
+                  />
+                </Field>
+              </div>
+            )}
 
-                {resumes.map((r) => (
-                  <button key={r._id} type="button"
-                    onClick={() => setSelectedResume(r._id)}
-                    className={`w-full p-4 rounded-xl border text-left transition-all ${
-                      selectedResume === r._id ? 'border-brand-500 bg-brand-600/20' : 'border-surface-border bg-surface hover:border-slate-500'
-                    }`}
-                  >
-                    <div className="flex items-center gap-3">
-                      <FileText className={`w-5 h-5 flex-shrink-0 ${selectedResume === r._id ? 'text-brand-400' : 'text-slate-500'}`} />
-                      <div>
-                        <p className="text-sm font-medium text-white">{r.originalName}</p>
-                        <p className="text-xs text-slate-500 mt-0.5">
-                          {r.parseStatus === 'parsed' ? '✅ Text extracted' : r.parseStatus === 'failed' ? '⚠️ Parse failed' : '⏳ Pending'}
-                          {r.isDefault && <span className="ml-2 badge-brand badge text-xs">Default</span>}
-                        </p>
-                      </div>
-                    </div>
-                  </button>
-                ))}
+            {step === 1 && (
+              <div className="space-y-7 animate-fade-in">
+                <div>
+                  <h2 className="text-[24px] font-medium tracking-tight3">Preferences</h2>
+                  <p className="mt-1 text-[14.5px] text-muted">Match the level you’re interviewing for.</p>
+                </div>
+                <fieldset>
+                  <legend className="mb-3 text-[13.5px] font-medium">Experience level</legend>
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                    {EXPERIENCE_LEVELS.map(({ value, label, sub }) => (
+                      <button
+                        key={value}
+                        type="button"
+                        aria-pressed={experienceLevel === value}
+                        onClick={() => setExperienceLevel(value)}
+                        className={cn(
+                          'rounded-r18 border p-4 text-left transition-colors',
+                          experienceLevel === value ? 'border-ink bg-ink text-white' : 'border-line bg-white hover:border-ink',
+                        )}
+                      >
+                        <span className="block text-[15px] font-medium">{label}</span>
+                        <span className={cn('mt-0.5 block text-[12.5px]', experienceLevel === value ? 'text-on-dark' : 'text-muted')}>{sub}</span>
+                      </button>
+                    ))}
+                  </div>
+                </fieldset>
+                <fieldset>
+                  <legend className="mb-3 text-[13.5px] font-medium">Question types <span className="font-normal text-muted">· pick at least one</span></legend>
+                  <div className="flex flex-wrap gap-2">
+                    {QUESTION_TYPES.map(({ value, label }) => (
+                      <button key={value} type="button" className="chip-toggle" aria-pressed={selectedTypes.includes(value)} onClick={() => toggleType(value)}>
+                        {selectedTypes.includes(value) && <Check size={13} aria-hidden="true" />}
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </fieldset>
+                <div>
+                  <label htmlFor="question-count" className="mb-3 flex items-baseline justify-between text-[13.5px] font-medium">
+                    Number of questions
+                    <span className="text-[28px] font-medium tracking-tight3 tabular">{numberOfQuestions}</span>
+                  </label>
+                  <input
+                    id="question-count"
+                    type="range"
+                    min="3"
+                    max="20"
+                    step="1"
+                    className="w-full accent-ink"
+                    {...register('numberOfQuestions', { valueAsNumber: true })}
+                  />
+                  <div className="mt-1 flex justify-between font-mono text-[11px] text-muted"><span>3</span><span>~{Math.round(Number(numberOfQuestions) * 2.5)} min</span><span>20</span></div>
+                </div>
+              </div>
+            )}
 
-                {resumes.length === 0 && (
-                  <p className="text-sm text-slate-500 text-center py-4">No resumes uploaded yet. <a href="/resumes" className="text-brand-400">Upload one →</a></p>
+            {step === 2 && (
+              <div className="space-y-5 animate-fade-in">
+                <div>
+                  <h2 className="text-[24px] font-medium tracking-tight3">Ground it in your resume</h2>
+                  <p className="mt-1 text-[14.5px] text-muted">We map the role’s requirements to experience you already have. Optional, but strongly recommended.</p>
+                </div>
+                {resumesQuery.isLoading ? (
+                  <div className="space-y-2">{[0, 1].map((i) => <Skeleton key={i} className="h-16 rounded-r18" />)}</div>
+                ) : resumesQuery.isError ? (
+                  <Alert tone="error" icon={AlertCircle} action={<Button size="sm" variant="soft" onClick={() => resumesQuery.refetch()}>Retry</Button>}>
+                    Couldn’t load your resumes.
+                  </Alert>
+                ) : (
+                  <div className="space-y-2" role="radiogroup" aria-label="Resume">
+                    {resumes.map((r) => (
+                      <button
+                        key={r._id}
+                        type="button"
+                        role="radio"
+                        aria-checked={selectedResume === r._id}
+                        onClick={() => setSelectedResume(r._id)}
+                        className={cn('flex w-full items-center gap-3 rounded-r18 border p-4 text-left transition-colors', selectedResume === r._id ? 'border-ink bg-white shadow-card ring-1 ring-ink' : 'border-line bg-white hover:border-ink')}
+                      >
+                        <span className={cn('grid h-10 w-10 flex-shrink-0 place-items-center rounded-r14', selectedResume === r._id ? 'bg-lime' : 'bg-stone-2')}>
+                          <FileText size={17} aria-hidden="true" />
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-[15px] font-medium">{r.originalName}</span>
+                          <span className="mt-0.5 block text-[12.5px] text-muted">
+                            {r.parseStatus === 'parsed' ? 'Text extracted' : r.parseStatus === 'failed' ? 'Text extraction failed' : 'Processing'}
+                            {r.parsedData?.skills?.length ? ` · ${r.parsedData.skills.length} skills found` : ''}
+                          </span>
+                        </span>
+                        {r.isDefault && <Pill tone="lime" mono>Default</Pill>}
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      role="radio"
+                      aria-checked={!selectedResume}
+                      onClick={() => setSelectedResume(null)}
+                      className={cn('w-full rounded-r18 border border-dashed p-4 text-left transition-colors', !selectedResume ? 'border-ink bg-white ring-1 ring-ink' : 'border-line bg-white/60 hover:border-ink')}
+                    >
+                      <span className="block text-[15px] font-medium">Job description only</span>
+                      <span className="mt-0.5 block text-[12.5px] text-muted">Questions come from the role, not your experience.</span>
+                    </button>
+                    {resumes.length === 0 && (
+                      <p className="pt-2 text-[14px] text-muted">
+                        No resume yet. <Link to="/resumes" className="link inline-flex items-center gap-1"><Upload size={13} /> Upload one</Link> then come back — your answers here are kept only until you leave this page.
+                      </p>
+                    )}
+                  </div>
                 )}
               </div>
-            </motion.div>
-          )}
+            )}
 
-          {/* ── Step 3: Review ────────────────────────────── */}
-          {step === 3 && (
-            <motion.div key="step3"
-              initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}
-              className="card p-8 space-y-5"
-            >
-              <div className="flex items-center gap-3 mb-2">
-                <div className="p-2 bg-amber-600/20 rounded-xl"><Sparkles className="w-5 h-5 text-amber-400" /></div>
-                <h3 className="text-xl font-display font-bold text-white">Review & Generate</h3>
-              </div>
-
-              {[
-                { label: 'Job Title', value: jobTitle },
-                { label: 'Company', value: company || 'Not specified' },
-                { label: 'Experience Level', value: EXPERIENCE_LEVELS.find((l) => l.value === experienceLevel)?.label },
-                { label: 'Question Types', value: selectedTypes.join(', ') },
-                { label: 'Number of Questions', value: numberOfQuestions },
-                { label: 'Resume', value: resumes.find((r) => r._id === selectedResume)?.originalName || 'None selected' },
-              ].map(({ label, value }) => (
-                <div key={label} className="flex justify-between items-start py-3 border-b border-surface-border last:border-0">
-                  <span className="text-slate-400 text-sm">{label}</span>
-                  <span className="text-white text-sm font-medium text-right max-w-xs">{value}</span>
+            {step === 3 && (
+              <div className="space-y-5 animate-fade-in">
+                <div>
+                  <h2 className="text-[24px] font-medium tracking-tight3">Review and generate</h2>
+                  <p className="mt-1 text-[14.5px] text-muted">Generation usually takes 5–20 seconds.</p>
                 </div>
-              ))}
-
-              <div className="p-4 rounded-xl bg-brand-600/10 border border-brand-500/30">
-                <p className="text-brand-300 text-sm">
-                  🤖 AI will generate <strong>{numberOfQuestions}</strong> personalized questions using Groq AI (Llama-3). This usually takes 5–15 seconds.
-                </p>
+                <dl className="divide-y divide-line-2 rounded-r18 border border-line-2">
+                  {[
+                    ['Job title', jobTitle],
+                    ['Company', company || 'Not specified'],
+                    ['Level', EXPERIENCE_LEVELS.find((l) => l.value === experienceLevel)?.label],
+                    ['Question types', selectedTypes.map((t) => QUESTION_TYPES.find((q) => q.value === t)?.label).join(', ')],
+                    ['Questions', numberOfQuestions],
+                    ['Resume', selectedResumeDoc?.originalName || 'None — job description only'],
+                  ].map(([k, v]) => (
+                    <div key={k} className="flex items-start justify-between gap-6 px-4 py-3 text-[14px]">
+                      <dt className="text-muted">{k}</dt>
+                      <dd className="max-w-[60%] break-words text-right font-medium">{v}</dd>
+                    </div>
+                  ))}
+                </dl>
+                {allowance && allowance.remaining === 0 && !createdId && (
+                  <Alert tone="warn" icon={AlertCircle} title="You’ve used this period’s interviews">
+                    Generating needs one interview from your allowance. <Link to="/pricing" className="link">See passes</Link>.
+                  </Alert>
+                )}
               </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+            )}
 
-        {/* Navigation */}
-        <div className="flex items-center justify-between mt-6">
-          <button type="button" onClick={() => setStep((s) => s - 1)} disabled={step === 0}
-            className="btn-secondary disabled:opacity-30">
-            <ChevronLeft className="w-4 h-4" /> Back
-          </button>
+            {submitError && (
+              <Alert tone="error" icon={AlertCircle} className="mt-6" title={submitError.status === 402 ? 'Interview allowance used up' : 'That didn’t work'}>
+                {submitError.message}{' '}
+                {submitError.status === 402 && <Link to="/pricing" className="link">Choose a pass</Link>}
+                {createdId && submitError.status !== 402 && ' Your interview is saved — generate again to retry.'}
+              </Alert>
+            )}
 
-          {step < STEPS.length - 1 ? (
-            <button type="button" onClick={() => setStep((s) => s + 1)} disabled={!canProceed()}
-              className="btn-primary disabled:opacity-50">
-              Next <ChevronRight className="w-4 h-4" />
-            </button>
-          ) : (
-            <button type="submit" disabled={isCreating || isGenerating} className="btn-primary">
-              {isCreating || isGenerating
-                ? <><Loader2 className="w-4 h-4 animate-spin" /> {isGenerating ? 'Generating...' : 'Creating...'}</>
-                : <><Sparkles className="w-4 h-4" /> Generate & Start</>}
-            </button>
+            <div className="mt-8 flex items-center justify-between gap-3 border-t border-line-2 pt-6">
+              <Button variant="ghost" icon={ArrowLeft} onClick={() => setStep((s) => s - 1)} disabled={step === 0 || busy}>
+                Back
+              </Button>
+              {step < STEPS.length - 1 ? (
+                // Distinct keys: reusing one <button> element would let the click that
+                // advances to the last step also submit the form once it becomes type=submit.
+                <Button key="continue" variant="ink" iconRight={ArrowRight} onClick={next}>
+                  Continue
+                </Button>
+              ) : (
+                <Button key="generate" type="submit" variant="lime" icon={busy ? undefined : Sparkles} loading={busy}>
+                  {phase === 'creating' ? 'Saving…' : phase === 'generating' ? 'Generating…' : createdId ? 'Retry generation' : 'Generate interview'}
+                </Button>
+              )}
+            </div>
+          </Card>
+        </form>
+
+        {/* Live summary */}
+        <aside className="h-fit rounded-r24 bg-ink p-6 text-white lg:sticky lg:top-6">
+          <p className="mono-label text-lime">Your interview</p>
+          <p className="mt-3 text-[22px] font-medium leading-tight tracking-tight1">{jobTitle?.trim() || 'Untitled role'}</p>
+          <p className="mt-1 text-[13.5px] text-on-dark">{company?.trim() || 'Company not specified'}</p>
+          <div className="mt-6 space-y-3 text-[14px]">
+            <div className="flex justify-between"><span className="text-on-dark">Level</span><span>{EXPERIENCE_LEVELS.find((l) => l.value === experienceLevel)?.label}</span></div>
+            <div className="flex justify-between"><span className="text-on-dark">Questions</span><span className="tabular">{numberOfQuestions}</span></div>
+            <div className="flex justify-between gap-4"><span className="text-on-dark">Resume</span><span className="truncate">{selectedResumeDoc ? 'Linked' : 'Not linked'}</span></div>
+            <div className="flex justify-between"><span className="text-on-dark">Job description</span><span className="tabular">{jdLength} chars</span></div>
+          </div>
+          <div className="mt-6 flex flex-wrap gap-1.5">
+            {selectedTypes.map((t) => <span key={t} className="rounded-full bg-white/10 px-3 py-1.5 text-[12px]">{QUESTION_TYPES.find((q) => q.value === t)?.label}</span>)}
+          </div>
+          {allowance && (
+            <p className="mt-6 border-t border-ink-line pt-4 text-[13px] text-on-dark">
+              {allowance.remaining} of {allowance.limit} interviews left {billing.data?.subscription ? 'on your pass' : 'this month'}.
+            </p>
           )}
-        </div>
-      </form>
+        </aside>
+      </div>
     </div>
   );
 }

@@ -1,122 +1,117 @@
-import { useForm } from 'react-hook-form';
-import { Link, useNavigate } from 'react-router-dom';
-import { User, Mail, Lock, Eye, EyeOff, Loader2 } from 'lucide-react';
 import { useState } from 'react';
-import { useAuthStore } from '@/store/auth-store';
+import { useForm } from 'react-hook-form';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { AlertCircle } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { useAuthStore } from '@/store/auth-store';
+import { Alert, Button, Field, Input, PasswordInput } from '@/components/ui';
+import { AuthFinePrint, AuthHeading, SocialSignIn, safeNext } from './auth-shared';
+
+const PASSWORD_RULE = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/;
 
 export default function RegisterPage() {
-  const [showPassword, setShowPassword] = useState(false);
   const { register: registerUser, isLoading } = useAuthStore();
   const navigate = useNavigate();
+  const { search } = useLocation();
+  const [serverError, setServerError] = useState('');
 
-  const { register, handleSubmit, watch, formState: { errors } } = useForm();
-  const password = watch('password');
+  const { register, handleSubmit, setError, formState: { errors, isSubmitting } } = useForm({
+    defaultValues: { name: '', email: '', password: '' },
+  });
+  const busy = isLoading || isSubmitting;
 
   const onSubmit = async (data) => {
-    const result = await registerUser({ name: data.name, email: data.email, password: data.password });
+    setServerError('');
+    const result = await registerUser({ name: data.name.trim(), email: data.email.trim(), password: data.password });
     if (result.success) {
-      toast.success('Account created! Let\'s get started 🎉');
-      navigate('/dashboard');
+      if (result.verificationRequired) {
+        toast.success('Check your email for a verification link, then sign in.');
+        navigate('/login', { replace: true });
+        return;
+      }
+      toast.success('Account created — let’s set up your first interview');
+      navigate(safeNext(search), { replace: true });
+      return;
+    }
+    // Attach known server errors to the relevant field, otherwise show a form-level alert.
+    if (result.status === 409 || /email/i.test(result.message)) {
+      setError('email', { type: 'server', message: result.message });
+    } else if (/password/i.test(result.message)) {
+      setError('password', { type: 'server', message: result.message });
+    } else if (/name/i.test(result.message)) {
+      setError('name', { type: 'server', message: result.message });
     } else {
-      toast.error(result.message);
+      setServerError(result.message);
     }
   };
 
   return (
-    <div>
-      <h2 className="text-3xl font-display font-bold text-white mb-2">Create account</h2>
-      <p className="text-slate-400 mb-8">Start practicing with AI-powered interviews</p>
+    <div className="animate-fade-in">
+      <AuthHeading title="Create your account" subtitle="Two free tailored interviews every month. No card needed." />
 
-      <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-        <div>
-          <label className="form-label">Full name</label>
-          <div className="relative">
-            <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-            <input
-              type="text"
-              placeholder="John Doe"
-              className="form-input pl-10"
-              {...register('name', {
-                required: 'Name is required',
-                minLength: { value: 2, message: 'Name must be at least 2 characters' }
-              })}
-            />
-          </div>
-          {errors.name && <p className="form-error">{errors.name.message}</p>}
-        </div>
+      <SocialSignIn
+        next={safeNext(search)}
+        onError={setServerError}
+        onSuccess={() => navigate(safeNext(search), { replace: true })}
+      />
 
-        <div>
-          <label className="form-label">Email address</label>
-          <div className="relative">
-            <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-            <input
-              type="email"
-              placeholder="you@example.com"
-              className="form-input pl-10"
-              {...register('email', {
-                required: 'Email is required',
-                pattern: { value: /^\S+@\S+\.\S+$/, message: 'Invalid email' }
-              })}
-            />
-          </div>
-          {errors.email && <p className="form-error">{errors.email.message}</p>}
-        </div>
+      <form onSubmit={handleSubmit(onSubmit)} noValidate className="flex flex-col gap-3.5">
+        {serverError && (
+          <Alert tone="error" icon={AlertCircle}>
+            {serverError}
+          </Alert>
+        )}
 
-        <div>
-          <label className="form-label">Password</label>
-          <div className="relative">
-            <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-            <input
-              type={showPassword ? 'text' : 'password'}
-              placeholder="Min 8 chars, uppercase & number"
-              className="form-input pl-10 pr-10"
-              {...register('password', {
-                required: 'Password is required',
-                minLength: { value: 8, message: 'Minimum 8 characters' },
-                pattern: {
-                  value: /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/,
-                  message: 'Must include uppercase, lowercase, and number',
-                },
-              })}
-            />
-            <button type="button" onClick={() => setShowPassword(!showPassword)}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300">
-              {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-            </button>
-          </div>
-          {errors.password && <p className="form-error">{errors.password.message}</p>}
-        </div>
+        <Field label="Full name" error={errors.name?.message}>
+          <Input
+            type="text"
+            size="lg"
+            autoComplete="name"
+            placeholder="Priya Raman"
+            {...register('name', {
+              required: 'Enter your name',
+              minLength: { value: 2, message: 'Name must be at least 2 characters' },
+              maxLength: { value: 50, message: 'Name must be 50 characters or fewer' },
+            })}
+          />
+        </Field>
 
-        <div>
-          <label className="form-label">Confirm password</label>
-          <div className="relative">
-            <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-            <input
-              type="password"
-              placeholder="Repeat your password"
-              className="form-input pl-10"
-              {...register('confirmPassword', {
-                required: 'Please confirm your password',
-                validate: (v) => v === password || 'Passwords do not match',
-              })}
-            />
-          </div>
-          {errors.confirmPassword && <p className="form-error">{errors.confirmPassword.message}</p>}
-        </div>
+        <Field label="Email" error={errors.email?.message}>
+          <Input
+            type="email"
+            size="lg"
+            autoComplete="email"
+            placeholder="you@example.com"
+            {...register('email', {
+              required: 'Enter your email',
+              pattern: { value: /^\S+@\S+\.\S+$/, message: 'Enter a valid email address' },
+            })}
+          />
+        </Field>
 
-        <button type="submit" disabled={isLoading} className="btn-primary w-full mt-2">
-          {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
-          {isLoading ? 'Creating account...' : 'Create Account'}
-        </button>
+        <Field
+          label="Password"
+          error={errors.password?.message}
+          hint="Use 8+ characters with an uppercase letter, a lowercase letter and a number."
+        >
+          <PasswordInput
+            size="lg"
+            autoComplete="new-password"
+            placeholder="At least 8 characters"
+            {...register('password', {
+              required: 'Choose a password',
+              minLength: { value: 8, message: 'Use at least 8 characters' },
+              pattern: { value: PASSWORD_RULE, message: 'Include an uppercase letter, a lowercase letter and a number' },
+            })}
+          />
+        </Field>
+
+        <Button type="submit" variant="lime" cta disabled={busy} className="mt-2 w-full py-[6px] text-[12.5px]">
+          {busy ? 'One moment…' : 'Create account'}
+        </Button>
       </form>
 
-      <p className="mt-6 text-center text-sm text-slate-400">
-        Already have an account?{' '}
-        <Link to="/login" className="text-brand-400 hover:text-brand-300 font-medium">
-          Sign in
-        </Link>
-      </p>
+      <AuthFinePrint />
     </div>
   );
 }

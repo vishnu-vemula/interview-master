@@ -1,175 +1,227 @@
-import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { motion } from 'framer-motion';
-import {
-  Trophy, ClipboardList, TrendingUp, Star,
-  Plus, ChevronRight, Clock, Building2
-} from 'lucide-react';
-import { userAPI } from '@/services/api';
+import { useQuery } from '@tanstack/react-query';
+import { ArrowRight, Check, ClipboardList, FileText, Plus, Play, Trophy, TrendingUp, History } from 'lucide-react';
+import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Cell, CartesianGrid } from 'recharts';
+import { userAPI, sessionAPI, resumeAPI, interviewAPI } from '@/services/api';
 import { useAuthStore } from '@/store/auth-store';
+import { useBillingMe } from '@/hooks/use-billing';
 import {
-  RadialBarChart, RadialBar, ResponsiveContainer,
-  AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid
-} from 'recharts';
+  Button, Card, CHART, ChartTooltip, EmptyState, ErrorState, PageHeader, ProgressBar, ScorePill, Skeleton, StatTile,
+} from '@/components/ui';
+import { cn, formatDate, getErrorMessage, timeAgo } from '@/utils';
 
-const StatCard = ({ icon: Icon, label, value, sub, color }) => (
-  <motion.div
-    initial={{ opacity: 0, y: 20 }}
-    animate={{ opacity: 1, y: 0 }}
-    className="card p-6 flex items-start gap-4"
-  >
-    <div className={`p-3 rounded-xl ${color}`}>
-      <Icon className="w-6 h-6" />
+function greeting() {
+  const h = new Date().getHours();
+  if (h < 12) return 'Good morning';
+  if (h < 18) return 'Good afternoon';
+  return 'Good evening';
+}
+
+function ResumeCard({ session }) {
+  const title = session.interviewId?.jobTitle || 'Your interview';
+  return (
+    <div className="flex flex-col gap-5 rounded-r24 bg-lime p-6 sm:flex-row sm:items-center sm:justify-between">
+      <div>
+        <p className="text-[14px] text-lime-ink">Pick up where you left off</p>
+        <p className="mt-1.5 text-[26px] font-medium leading-tight tracking-tight3">{title}</p>
+        <p className="mt-1 text-[13.5px] text-lime-ink">
+          {session.interviewId?.company ? `${session.interviewId.company} · ` : ''}Started {timeAgo(session.startedAt || session.createdAt)}
+        </p>
+      </div>
+      <Button to={`/interviews/${session.interviewId?._id || session.interviewId}/session`} variant="ink" cta className="py-[6px] [&_.btn-cta-disc]:bg-lime [&_.btn-cta-disc]:text-ink">
+        Resume session
+      </Button>
     </div>
-    <div>
-      <p className="text-slate-400 text-sm">{label}</p>
-      <p className="text-3xl font-display font-bold text-white mt-1">{value}</p>
-      {sub && <p className="text-xs text-slate-500 mt-1">{sub}</p>}
-    </div>
-  </motion.div>
-);
+  );
+}
+
+function GettingStarted({ resumes, interviews, sessions }) {
+  const steps = [
+    { done: resumes > 0, title: 'Upload your resume', body: 'PDF, up to 5 MB. Questions are grounded in it.', to: '/resumes', cta: 'Upload' },
+    { done: interviews > 0, title: 'Paste a job description', body: 'Create an interview tailored to the role.', to: '/interviews/new', cta: 'Create' },
+    { done: sessions > 0, title: 'Answer out loud or in text', body: 'Use voice input or type — follow-ups when an answer is thin.', to: '/interviews', cta: 'Practice' },
+  ];
+  const next = steps.findIndex((s) => !s.done);
+  return (
+    <Card className="p-6 sm:p-7">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 className="text-[22px] font-medium tracking-tight1">Get your first report in three steps</h2>
+        <span className="mono-label text-muted">{steps.filter((s) => s.done).length}/3 done</span>
+      </div>
+      <ol className="mt-6 grid gap-3 md:grid-cols-3">
+        {steps.map((s, i) => (
+          <li
+            key={s.title}
+            className={cn(
+              'flex flex-col rounded-r20 p-5',
+              s.done ? 'bg-stone-2' : i === next ? 'bg-ink text-white' : 'border border-line-2 bg-white',
+            )}
+          >
+            <span className={cn('grid h-8 w-8 place-items-center rounded-full font-mono text-[12px]', s.done ? 'bg-lime text-ink' : i === next ? 'bg-lime text-ink' : 'bg-stone text-muted')}>
+              {s.done ? <Check size={15} /> : `0${i + 1}`}
+            </span>
+            <p className="mt-6 text-[17px] font-medium tracking-tight1">{s.title}</p>
+            <p className={cn('mt-1.5 flex-1 text-[13.5px] leading-relaxed', i === next && !s.done ? 'text-on-dark' : 'text-muted')}>{s.body}</p>
+            {!s.done && (
+              <Button to={s.to} size="sm" variant={i === next ? 'lime' : 'soft'} className="mt-4 self-start" iconRight={ArrowRight}>
+                {s.cta}
+              </Button>
+            )}
+          </li>
+        ))}
+      </ol>
+    </Card>
+  );
+}
 
 export default function DashboardPage() {
-  const { user } = useAuthStore();
-  const [stats, setStats] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const user = useAuthStore((s) => s.user);
+  const dashboard = useQuery({ queryKey: ['dashboard'], queryFn: () => userAPI.getDashboard().then((r) => r.data.data) });
+  const sessions = useQuery({ queryKey: ['sessions', { page: 1, limit: 10 }], queryFn: () => sessionAPI.getAll({ page: 1, limit: 10 }).then((r) => r.data) });
+  const resumes = useQuery({ queryKey: ['resumes'], queryFn: () => resumeAPI.getAll().then((r) => r.data.resumes || []) });
+  const interviews = useQuery({ queryKey: ['interviews', { page: 1, limit: 1 }], queryFn: () => interviewAPI.getAll({ page: 1, limit: 1 }).then((r) => r.data) });
+  const billing = useBillingMe();
 
-  useEffect(() => {
-    userAPI.getDashboard()
-      .then(({ data }) => setStats(data.data))
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, []);
-
-  const scoreData = [
-    { name: 'Score', value: stats?.averageScore ?? 0, fill: '#6366f1' },
-  ];
+  const stats = dashboard.data;
+  const loading = dashboard.isLoading;
+  const active = sessions.data?.sessions?.find((s) => ['started', 'in_progress', 'evaluation_failed'].includes(s.status));
+  const recent = stats?.recentSessions || [];
+  const trend = [...recent].reverse().map((s, i) => ({ name: `#${i + 1}`, score: s.overallScore ?? 0, title: s.interviewId?.jobTitle }));
+  const newUser = !loading && stats && stats.totalSessions === 0;
+  const allowance = billing.data?.allowance;
 
   return (
     <div className="space-y-8 animate-fade-in">
-      {/* Greeting */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-2xl font-display font-bold text-white">
-            Good day, <span className="gradient-text">{user?.name?.split(' ')[0]}</span> 👋
-          </h2>
-          <p className="text-slate-400 mt-1">Ready to practice? Let&apos;s crush your next interview.</p>
-        </div>
-        <Link to="/interviews/new" className="btn-primary hidden sm:inline-flex">
-          <Plus className="w-4 h-4" />
-          New Interview
-        </Link>
-      </div>
+      <PageHeader
+        eyebrow="Dashboard"
+        title={`${greeting()}, ${user?.name?.split(' ')[0] || 'there'}`}
+        description="Your practice at a glance — scores are practice feedback, never a hiring prediction."
+        actions={<Button to="/interviews/new" variant="lime" icon={Plus}>New interview</Button>}
+      />
 
-      {/* Stats Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-        <StatCard
-          icon={ClipboardList} label="Total Interviews" color="bg-brand-600/20 text-brand-400"
-          value={loading ? '—' : stats?.totalSessions ?? 0}
-          sub="All time sessions"
-        />
-        <StatCard
-          icon={Trophy} label="Completed" color="bg-emerald-600/20 text-emerald-400"
-          value={loading ? '—' : stats?.completedSessions ?? 0}
-          sub="Finished sessions"
-        />
-        <StatCard
-          icon={TrendingUp} label="Avg. Score" color="bg-brand-600/20 text-brand-400"
-          value={loading ? '—' : `${stats?.averageScore ?? 0}%`}
-          sub="Across all sessions"
-        />
-        <StatCard
-          icon={Star} label="Best Score" color="bg-amber-600/20 text-amber-400"
-          value={loading ? '—' : `${stats?.bestScore ?? 0}%`}
-          sub="Personal best"
-        />
-      </div>
+      {dashboard.isError ? (
+        <ErrorState title="Couldn’t load your dashboard" description={getErrorMessage(dashboard.error)} onRetry={dashboard.refetch} />
+      ) : (
+        <>
+          {active && <ResumeCard session={active} />}
 
-      {/* Charts + Recent */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Score Gauge */}
-        <div className="card p-6 flex flex-col items-center justify-center">
-          <h3 className="text-sm font-medium text-slate-400 mb-4">Average Performance</h3>
-          <ResponsiveContainer width="100%" height={160}>
-            <RadialBarChart innerRadius="60%" outerRadius="90%" data={scoreData} startAngle={90} endAngle={-270}>
-              <RadialBar background={{ fill: '#2a2a4a' }} dataKey="value" cornerRadius={8} />
-            </RadialBarChart>
-          </ResponsiveContainer>
-          <p className="text-4xl font-display font-bold gradient-text -mt-4">
-            {stats?.averageScore ?? 0}%
-          </p>
-          <p className="text-slate-500 text-xs mt-1">Overall score</p>
-        </div>
-
-        {/* Recent Sessions */}
-        <div className="card p-6 lg:col-span-2">
-          <div className="flex items-center justify-between mb-5">
-            <h3 className="font-semibold text-white">Recent Sessions</h3>
-            <Link to="/sessions" className="btn-ghost text-xs">View all <ChevronRight className="w-3 h-3" /></Link>
+          <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+            <StatTile tone="ink" label="Sessions" icon={ClipboardList} value={stats?.totalSessions ?? 0} sub="All time" loading={loading} />
+            <StatTile label="Completed" icon={Check} value={stats?.completedSessions ?? 0} sub="With a full report" loading={loading} />
+            <StatTile label="Average score" icon={TrendingUp} value={`${Number(stats?.averageScore ?? 0)}%`} sub="Across completed sessions" loading={loading} />
+            <StatTile tone="lime" label="Best score" icon={Trophy} value={`${stats?.bestScore ?? 0}%`} sub="Personal best" loading={loading} />
           </div>
 
-          {!stats?.recentSessions?.length ? (
-            <div className="text-center py-10">
-              <ClipboardList className="w-10 h-10 text-slate-600 mx-auto mb-3" />
-              <p className="text-slate-500">No sessions yet</p>
-              <Link to="/interviews/new" className="btn-primary mt-4 inline-flex">Start practicing</Link>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {stats.recentSessions.map((session) => (
-                <Link
-                  key={session._id}
-                  to={`/sessions/${session._id}/results`}
-                  className="flex items-center justify-between p-4 rounded-xl bg-surface hover:bg-surface-hover border border-surface-border transition-all group"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="p-2 bg-brand-600/20 rounded-lg">
-                      <Building2 className="w-4 h-4 text-brand-400" />
-                    </div>
-                    <div>
-                      <p className="text-sm font-medium text-white">{session.interviewId?.jobTitle}</p>
-                      <p className="text-xs text-slate-500 flex items-center gap-1 mt-0.5">
-                        <Clock className="w-3 h-3" />
-                        {new Date(session.createdAt).toLocaleDateString()}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <span className={`badge ${session.overallScore >= 70 ? 'badge-success' : session.overallScore >= 40 ? 'badge-warning' : 'badge-danger'}`}>
-                      {session.overallScore}%
-                    </span>
-                    <ChevronRight className="w-4 h-4 text-slate-500 group-hover:text-brand-400 transition-colors" />
-                  </div>
-                </Link>
-              ))}
-            </div>
+          {newUser && (
+            <GettingStarted
+              resumes={resumes.data?.length ?? 0}
+              interviews={interviews.data?.total ?? 0}
+              sessions={stats?.totalSessions ?? 0}
+            />
           )}
-        </div>
-      </div>
 
-      {/* Quick Actions */}
-      <div className="card p-6">
-        <h3 className="font-semibold text-white mb-4">Quick Actions</h3>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          {[
-            { to: '/interviews/new', icon: Plus, label: 'Create Interview', desc: 'Setup a new mock session', color: 'from-brand-600 to-brand-500' },
-            { to: '/resumes', icon: ClipboardList, label: 'Upload Resume', desc: 'Add your latest resume', color: 'from-emerald-600 to-teal-600' },
-            { to: '/sessions', icon: TrendingUp, label: 'View Progress', desc: 'Review past performance', color: 'from-amber-600 to-orange-600' },
-          ].map(({ to, icon: Icon, label, desc, color }) => (
-            <Link key={to} to={to}
-              className="flex items-center gap-4 p-4 rounded-xl bg-surface border border-surface-border hover:border-brand-500/50 hover:bg-surface-hover transition-all group"
-            >
-              <div className={`p-3 rounded-xl bg-gradient-to-br ${color} flex-shrink-0`}>
-                <Icon className="w-5 h-5 text-white" />
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-5">
+            <Card className="p-6 lg:col-span-2">
+              <div className="flex items-baseline justify-between">
+                <h2 className="text-[17px] font-medium tracking-tight1">Score trend</h2>
+                <span className="mono-label text-muted">Last {trend.length || 0}</span>
               </div>
-              <div>
-                <p className="text-sm font-semibold text-white">{label}</p>
-                <p className="text-xs text-slate-500">{desc}</p>
+              <div className="mt-5 h-52">
+                {loading ? (
+                  <Skeleton className="h-full w-full rounded-r18" />
+                ) : trend.length === 0 ? (
+                  <div className="grid h-full place-items-center rounded-r18 bg-paper px-6 text-center text-[13.5px] text-muted">
+                    Finish a session to start your trend line.
+                  </div>
+                ) : (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={trend} margin={{ top: 4, right: 4, left: -24, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke={CHART.grid} vertical={false} />
+                      <XAxis dataKey="name" {...CHART.axisProps} />
+                      <YAxis domain={[0, 100]} {...CHART.axisProps} />
+                      <Tooltip content={<ChartTooltip formatter={(v) => `${v}%`} />} cursor={{ fill: '#F1F2F0' }} />
+                      <Bar dataKey="score" name="Score" radius={[6, 6, 6, 6]} maxBarSize={34}>
+                        {trend.map((t, i) => <Cell key={i} fill={i === trend.length - 1 ? CHART.blue : CHART.blueSoft} />)}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                )}
               </div>
-            </Link>
-          ))}
-        </div>
-      </div>
+              {allowance && (
+                <div className="mt-6 border-t border-line-2 pt-5">
+                  <div className="mb-2 flex justify-between text-[13.5px]">
+                    <span>Interviews this period</span>
+                    <span className="text-muted tabular">{allowance.used} of {allowance.limit} used</span>
+                  </div>
+                  <ProgressBar value={allowance.used} max={allowance.limit || 1} tone={allowance.remaining ? 'blue' : 'coral'} label="Interviews used" />
+                  {allowance.remaining === 0 && (
+                    <Link to="/pricing" className="mt-3 inline-block font-mono text-[10.5px] uppercase tracking-mono text-brand-600 hover:text-ink">
+                      Get more interviews ↗
+                    </Link>
+                  )}
+                </div>
+              )}
+            </Card>
+
+            <Card className="p-6 lg:col-span-3">
+              <div className="flex items-center justify-between">
+                <h2 className="text-[17px] font-medium tracking-tight1">Recent reports</h2>
+                <Link to="/sessions" className="mono-label text-brand-600 hover:text-ink">View all ↗</Link>
+              </div>
+              {loading ? (
+                <div className="mt-4 space-y-2">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-16" />)}</div>
+              ) : recent.length === 0 ? (
+                <EmptyState
+                  compact
+                  className="mt-4"
+                  icon={History}
+                  title="No reports yet"
+                  description="Complete an interview and your per-answer report lands here."
+                  action={<Button to="/interviews/new" variant="ink" size="sm" icon={Play}>Start practicing</Button>}
+                />
+              ) : (
+                <ul className="mt-3 divide-y divide-line-2">
+                  {recent.map((s) => (
+                    <li key={s._id}>
+                      <Link to={`/sessions/${s._id}/results`} className="group flex items-center justify-between gap-4 py-3.5 hover:text-ink">
+                        <div className="flex min-w-0 items-center gap-3">
+                          <span className="grid h-10 w-10 flex-shrink-0 place-items-center rounded-r14 bg-stone-2"><FileText size={17} aria-hidden="true" /></span>
+                          <div className="min-w-0">
+                            <p className="truncate text-[15px] font-medium">{s.interviewId?.jobTitle || 'Interview'}</p>
+                            <p className="mt-0.5 truncate text-[12.5px] text-muted">
+                              {[s.interviewId?.company, s.interviewId?.experienceLevel && `${s.interviewId.experienceLevel} level`, formatDate(s.completedAt || s.createdAt)].filter(Boolean).join(' · ')}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex flex-shrink-0 items-center gap-3">
+                          <ScorePill score={s.overallScore} />
+                          <ArrowRight size={16} className="text-faint transition-transform group-hover:translate-x-0.5 group-hover:text-ink" aria-hidden="true" />
+                        </div>
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Card>
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+            {[
+              { to: '/interviews/new', title: 'New interview', body: 'Paste a job description and get tailored questions.', tone: 'bg-ink text-white', sub: 'text-on-dark' },
+              { to: '/resumes', title: 'Your resumes', body: `${resumes.data?.length ?? 0} uploaded · keep the latest one as default.`, tone: 'bg-stone', sub: 'text-muted' },
+              { to: '/jobs/recommended', title: 'Roles that match you', body: 'Jobs scored against the skills in your resume.', tone: 'bg-brand text-white', sub: 'text-brand-50' },
+            ].map((q) => (
+              <Link key={q.to} to={q.to} className={cn('group flex min-h-[150px] flex-col rounded-r24 p-6 transition-transform hover:-translate-y-0.5 hover:text-inherit', q.tone)}>
+                <span className="flex items-center justify-between text-[20px] font-medium tracking-tight1">
+                  {q.title}
+                  <ArrowRight size={18} className="transition-transform group-hover:translate-x-1" aria-hidden="true" />
+                </span>
+                <span className={cn('mt-auto text-[14px] leading-relaxed', q.sub)}>{q.body}</span>
+              </Link>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }

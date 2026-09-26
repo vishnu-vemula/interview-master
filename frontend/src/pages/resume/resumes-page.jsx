@@ -1,464 +1,360 @@
-import { useCallback, useState, useEffect } from 'react';
+import { useCallback, useState } from 'react';
 import { useDropzone } from 'react-dropzone';
-import { motion, AnimatePresence } from 'framer-motion';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  Upload, FileText, Trash2, Star, Loader2, CheckCircle,
-  AlertCircle, ExternalLink, ChevronDown, ChevronUp,
-  Cpu, Briefcase, Code2, GraduationCap, RefreshCw, X,
+  AlertCircle, ChevronDown, Download, FileText, RefreshCw, Star, Trash2, Upload,
 } from 'lucide-react';
-import { resumeAPI } from '@/services/api';
 import toast from 'react-hot-toast';
+import { resumeAPI } from '@/services/api';
+import {
+  Alert, Button, Card, EmptyState, ErrorState, Field, Modal, PageHeader, Pill, ProgressBar, SkeletonList, Textarea, useConfirm,
+} from '@/components/ui';
+import { cn, formatDate, getErrorMessage } from '@/utils';
 
+const MAX_BYTES = 5 * 1024 * 1024;
 const PARSE_STATUS = {
-  pending: { label: 'Processing',     cls: 'badge-warning', icon: Loader2 },
-  parsed:  { label: 'Text extracted', cls: 'badge-success', icon: CheckCircle },
-  failed:  { label: 'Parse failed',   cls: 'badge-danger',  icon: AlertCircle },
+  pending: { label: 'Processing', tone: 'blue' },
+  parsed: { label: 'Text extracted', tone: 'ok' },
+  failed: { label: 'Extraction failed', tone: 'coral' },
 };
 
-/* ── Chip ─────────────────────────────────────────────────────────── */
-function Chip({ label }) {
-  return (
-    <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
-      bg-brand-600/20 text-brand-300 border border-brand-500/30">
-      {label}
-    </span>
-  );
-}
-
-/* ── Section block inside parsed panel ───────────────────────────── */
-function ParsedSection({ icon: Icon, title, color, children }) {
+function Section({ title, children }) {
   return (
     <div>
-      <div className={`flex items-center gap-2 mb-2 text-xs font-semibold uppercase tracking-wider ${color}`}>
-        <Icon className="w-3.5 h-3.5" />
-        {title}
-      </div>
+      <p className="mono-label mb-2 text-muted">{title}</p>
       {children}
     </div>
   );
 }
 
-/* ── Expanded parsed data panel for one resume ───────────────────── */
-function ParsedDataPanel({ resume, onReparse }) {
+function ParsedData({ resume, onReparse }) {
   const d = resume.parsedData;
-  const [showModal, setShowModal] = useState(false);
-  const [jdInput, setJdInput]     = useState('');
-  const [parsing, setParsing]     = useState(false);
+  if (!d) {
+    return (
+      <div className="flex flex-col items-start gap-3 rounded-r18 bg-paper p-4 sm:flex-row sm:items-center sm:justify-between">
+        <p className="text-[14px] text-muted">We haven’t structured this resume yet.</p>
+        <Button size="sm" variant="outline" icon={RefreshCw} onClick={onReparse} disabled={!resume.extractedText && resume.parseStatus !== 'parsed'}>
+          Parse now
+        </Button>
+      </div>
+    );
+  }
+  const skills = Array.isArray(d.skills) ? d.skills : [];
+  const experience = Array.isArray(d.experience) ? d.experience : [];
+  const projects = Array.isArray(d.projects) ? d.projects : [];
+  const required = Array.isArray(d.required_skills) ? d.required_skills : [];
+
+  return (
+    <div className="space-y-5">
+      {d.name && <p className="text-[18px] font-medium tracking-tight1">{d.name}</p>}
+      {skills.length > 0 && (
+        <Section title={`Skills · ${skills.length}`}>
+          <div className="flex flex-wrap gap-1.5">{skills.map((s, i) => <Pill key={i} tone="blue">{s}</Pill>)}</div>
+        </Section>
+      )}
+      {experience.length > 0 && (
+        <Section title="Experience">
+          <div className="grid gap-2 sm:grid-cols-2">
+            {experience.map((e, i) => (
+              <div key={i} className="rounded-r14 bg-paper p-3.5 text-[13.5px]">
+                <p className="font-medium">{e.role}{e.company && <span className="font-normal text-muted"> · {e.company}</span>}</p>
+                {e.duration && <p className="mt-0.5 text-muted">{e.duration}</p>}
+                {Array.isArray(e.tech) && e.tech.length > 0 && <p className="mt-1.5 text-[12.5px] text-muted-strong">{e.tech.join(' · ')}</p>}
+              </div>
+            ))}
+          </div>
+        </Section>
+      )}
+      {projects.length > 0 && (
+        <Section title="Projects">
+          <div className="grid gap-2 sm:grid-cols-2">
+            {projects.map((p, i) => (
+              <div key={i} className="rounded-r14 bg-paper p-3.5 text-[13.5px]">
+                <p className="font-medium">{p.title}</p>
+                {p.description && <p className="mt-1 leading-relaxed text-muted-strong">{p.description}</p>}
+                {Array.isArray(p['tech stack']) && p['tech stack'].length > 0 && <p className="mt-1.5 text-[12.5px] text-muted">{p['tech stack'].join(' · ')}</p>}
+              </div>
+            ))}
+          </div>
+        </Section>
+      )}
+      {d.education && (
+        <Section title="Education">
+          <p className="text-[14px] text-ink-soft">{typeof d.education === 'string' ? d.education : Array.isArray(d.education) ? d.education.map((x) => (typeof x === 'string' ? x : Object.values(x).filter(Boolean).join(', '))).join(' · ') : Object.values(d.education).filter(Boolean).join(', ')}</p>
+        </Section>
+      )}
+      {(d.role || required.length > 0) && (
+        <Section title="Matched job description">
+          {d.role && <p className="mb-2 text-[14px] font-medium">{d.role}</p>}
+          {required.length > 0 && <div className="flex flex-wrap gap-1.5">{required.map((s, i) => <Pill key={i} tone="lime">{s}</Pill>)}</div>}
+        </Section>
+      )}
+      <Button size="sm" variant="ghost" icon={RefreshCw} onClick={onReparse} className="-ml-2">
+        Re-parse with a job description
+      </Button>
+    </div>
+  );
+}
+
+export default function ResumesPage() {
+  const queryClient = useQueryClient();
+  const confirm = useConfirm();
+  const [upload, setUpload] = useState(null); // { name, progress, phase: 'uploading'|'analysing' }
+  const [uploadError, setUploadError] = useState('');
+  const [expanded, setExpanded] = useState(null);
+  const [busyId, setBusyId] = useState(null);
+  const [reparse, setReparse] = useState(null); // resume being re-parsed
+  const [jdInput, setJdInput] = useState('');
+  const [parsing, setParsing] = useState(false);
+
+  const { data: resumes = [], isLoading, isError, error, refetch } = useQuery({
+    queryKey: ['resumes'],
+    queryFn: () => resumeAPI.getAll().then((r) => r.data.resumes || []),
+  });
+  const setResumes = (updater) => queryClient.setQueryData(['resumes'], (old = []) => updater(old));
+
+  const onDrop = useCallback(async (accepted, rejected) => {
+    setUploadError('');
+    if (rejected?.length) {
+      const code = rejected[0].errors?.[0]?.code;
+      setUploadError(code === 'file-too-large' ? 'That file is over 5 MB. Export a smaller PDF and try again.' : code === 'file-invalid-type' ? 'Only PDF resumes are supported.' : 'Upload one PDF file at a time.');
+      return;
+    }
+    const file = accepted[0];
+    if (!file) return;
+    const formData = new FormData();
+    formData.append('resume', file);
+    setUpload({ name: file.name, progress: 0, phase: 'uploading' });
+    try {
+      const { data } = await resumeAPI.upload(formData, (e) => {
+        const pct = e.total ? Math.round((e.loaded / e.total) * 100) : 0;
+        setUpload({ name: file.name, progress: pct, phase: pct >= 100 ? 'analysing' : 'uploading' });
+      });
+      setResumes((prev) => [data.resume, ...prev.map((r) => (data.resume.isDefault ? { ...r, isDefault: false } : r))]);
+      setExpanded(data.resume._id);
+      toast.success(`“${file.name}” uploaded`);
+    } catch (err) {
+      setUploadError(getErrorMessage(err, 'Upload failed. Please try again.'));
+    } finally {
+      setUpload(null);
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const { getRootProps, getInputProps, isDragActive, open } = useDropzone({
+    onDrop,
+    accept: { 'application/pdf': ['.pdf'] },
+    maxFiles: 1,
+    maxSize: MAX_BYTES,
+    multiple: false,
+    disabled: !!upload,
+    noClick: true,
+  });
+
+  const handleDelete = async (resume) => {
+    const ok = await confirm({
+      title: 'Delete this resume?',
+      description: `“${resume.originalName}” will be permanently removed from storage. Interviews already generated from it keep their questions.`,
+      confirmLabel: 'Delete resume',
+      tone: 'danger',
+    });
+    if (!ok) return;
+    setBusyId(resume._id);
+    try {
+      await resumeAPI.delete(resume._id);
+      setResumes((prev) => prev.filter((r) => r._id !== resume._id));
+      toast.success('Resume deleted');
+    } catch (err) {
+      toast.error(getErrorMessage(err, 'Couldn’t delete the resume'));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const handleDownload = async (resume) => {
+    setBusyId(resume._id);
+    try {
+      const { data } = await resumeAPI.download(resume._id);
+      const link = document.createElement('a');
+      link.href = data.url;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    } catch (err) {
+      toast.error(getErrorMessage(err, 'Download is unavailable right now'));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const handleSetDefault = async (resume) => {
+    setBusyId(resume._id);
+    try {
+      await resumeAPI.setDefault(resume._id);
+      setResumes((prev) => prev.map((r) => ({ ...r, isDefault: r._id === resume._id })));
+      toast.success('Default resume updated');
+    } catch (err) {
+      toast.error(getErrorMessage(err, 'Couldn’t update the default resume'));
+    } finally {
+      setBusyId(null);
+    }
+  };
 
   const handleReparse = async () => {
+    if (!reparse) return;
     setParsing(true);
     try {
-      await onReparse(resume._id, jdInput);
-      setShowModal(false);
+      const { data } = await resumeAPI.parse(reparse._id, jdInput.trim());
+      setResumes((prev) => prev.map((r) => (r._id === reparse._id ? { ...r, parsedData: data.parsedData, isParsed: true } : r)));
+      toast.success('Resume parsed');
+      setExpanded(reparse._id);
+      setReparse(null);
       setJdInput('');
+    } catch (err) {
+      toast.error(getErrorMessage(err, 'Parsing failed. Please try again.'));
     } finally {
       setParsing(false);
     }
   };
 
-  if (!d) {
-    return (
-      <div className="mt-4 pt-4 border-t border-surface-border">
-        <p className="text-xs text-slate-500 text-center">
-          Structured data not available.{' '}
-          <button
-            onClick={() => setShowModal(true)}
-            className="text-brand-400 hover:underline"
-          >
-            Parse now →
-          </button>
-        </p>
-        {showModal && (
-          <ReparseModal
-            jdInput={jdInput}
-            setJdInput={setJdInput}
-            parsing={parsing}
-            onConfirm={handleReparse}
-            onClose={() => setShowModal(false)}
-          />
-        )}
-      </div>
-    );
-  }
-
   return (
-    <div className="mt-4 pt-4 border-t border-surface-border space-y-4">
-
-      {/* Candidate name */}
-      {d.name && (
-        <p className="text-sm font-semibold text-white">
-          👤 {d.name}
-        </p>
-      )}
-
-      {/* Skills */}
-      {Array.isArray(d.skills) && d.skills.length > 0 && (
-        <ParsedSection icon={Cpu} title="Skills" color="text-brand-400">
-          <div className="flex flex-wrap gap-1.5">
-            {d.skills.map((s, i) => <Chip key={i} label={s} />)}
-          </div>
-        </ParsedSection>
-      )}
-
-      {/* Experience */}
-      {Array.isArray(d.experience) && d.experience.length > 0 && (
-        <ParsedSection icon={Briefcase} title="Experience" color="text-brand-400">
-          <div className="space-y-2">
-            {d.experience.map((exp, i) => (
-              <div key={i} className="p-3 rounded-xl bg-surface-border/30 border border-surface-border text-xs">
-                <p className="font-semibold text-white">{exp.role} {exp.company && <span className="text-slate-400">@ {exp.company}</span>}</p>
-                {exp.duration && <p className="text-slate-500 mt-0.5">{exp.duration}</p>}
-                {Array.isArray(exp.tech) && exp.tech.length > 0 && (
-                  <div className="flex flex-wrap gap-1 mt-1.5">
-                    {exp.tech.map((t, j) => <Chip key={j} label={t} />)}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </ParsedSection>
-      )}
-
-      {/* Projects */}
-      {Array.isArray(d.projects) && d.projects.length > 0 && (
-        <ParsedSection icon={Code2} title="Projects" color="text-emerald-400">
-          <div className="space-y-2">
-            {d.projects.map((proj, i) => (
-              <div key={i} className="p-3 rounded-xl bg-surface-border/30 border border-surface-border text-xs">
-                <p className="font-semibold text-white">{proj.title}</p>
-                {proj.description && <p className="text-slate-400 mt-0.5 leading-relaxed">{proj.description}</p>}
-                {Array.isArray(proj['tech stack']) && proj['tech stack'].length > 0 && (
-                  <div className="flex flex-wrap gap-1 mt-1.5">
-                    {proj['tech stack'].map((t, j) => <Chip key={j} label={t} />)}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </ParsedSection>
-      )}
-
-      {/* Education */}
-      {d.education && (
-        <ParsedSection icon={GraduationCap} title="Education" color="text-amber-400">
-          <p className="text-xs text-slate-300">
-            {typeof d.education === 'string'
-              ? d.education
-              : JSON.stringify(d.education)}
-          </p>
-        </ParsedSection>
-      )}
-
-      {/* JD fields — shown when parsed with a JD */}
-      {d.role && (
-        <ParsedSection icon={Briefcase} title="JD Role" color="text-rose-400">
-          <p className="text-xs text-slate-300">{d.role}</p>
-        </ParsedSection>
-      )}
-      {Array.isArray(d.required_skills) && d.required_skills.length > 0 && (
-        <ParsedSection icon={Cpu} title="Required Skills (JD)" color="text-rose-400">
-          <div className="flex flex-wrap gap-1.5">
-            {d.required_skills.map((s, i) => <Chip key={i} label={s} />)}
-          </div>
-        </ParsedSection>
-      )}
-
-      {/* Re-parse button */}
-      <button
-        onClick={() => setShowModal(true)}
-        className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-brand-400 transition-colors"
-      >
-        <RefreshCw className="w-3 h-3" /> Re-parse with Job Description
-      </button>
-
-      {showModal && (
-        <ReparseModal
-          jdInput={jdInput}
-          setJdInput={setJdInput}
-          parsing={parsing}
-          onConfirm={handleReparse}
-          onClose={() => setShowModal(false)}
-        />
-      )}
-    </div>
-  );
-}
-
-/* ── Re-parse modal overlay ───────────────────────────────────────── */
-function ReparseModal({ jdInput, setJdInput, parsing, onConfirm, onClose }) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-      <motion.div
-        initial={{ opacity: 0, scale: 0.95 }}
-        animate={{ opacity: 1, scale: 1 }}
-        className="card w-full max-w-lg p-6 space-y-4"
-      >
-        <div className="flex items-center justify-between">
-          <h3 className="font-display font-bold text-white text-lg">Re-parse Resume</h3>
-          <button onClick={onClose} className="btn-ghost p-1.5"><X className="w-4 h-4" /></button>
-        </div>
-
-        <p className="text-slate-400 text-sm">
-          Optionally paste a job description to get richer JD-matched parsing
-          (required skills, responsibilities, preferred skills).
-        </p>
-
-        <textarea
-          className="form-textarea h-36"
-          placeholder="Paste job description here (optional)..."
-          value={jdInput}
-          onChange={(e) => setJdInput(e.target.value)}
-        />
-
-        <div className="flex justify-end gap-3">
-          <button onClick={onClose} className="btn-secondary">Cancel</button>
-          <button onClick={onConfirm} disabled={parsing} className="btn-primary">
-            {parsing
-              ? <><Loader2 className="w-4 h-4 animate-spin" /> Parsing…</>
-              : <><RefreshCw className="w-4 h-4" /> Parse</>}
-          </button>
-        </div>
-      </motion.div>
-    </div>
-  );
-}
-
-/* ── Main page ───────────────────────────────────────────────────── */
-export default function ResumesPage() {
-  const [resumes, setResumes]   = useState([]);
-  const [loading, setLoading]   = useState(true);
-  const [uploading, setUploading] = useState(false);
-  const [deleting, setDeleting] = useState(null);
-  const [expanded, setExpanded] = useState(null); // resume._id or null
-
-  const fetchResumes = () => {
-    resumeAPI.getAll()
-      .then(({ data }) => setResumes(data.resumes || []))
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(fetchResumes, []);
-
-  const onDrop = useCallback(async (acceptedFiles) => {
-    const file = acceptedFiles[0];
-    if (!file) return;
-    if (file.size > 5 * 1024 * 1024) { toast.error('File size must be under 5MB'); return; }
-
-    setUploading(true);
-    const formData = new FormData();
-    formData.append('resume', file);
-
-    try {
-      const { data } = await resumeAPI.upload(formData);
-      setResumes((prev) => [data.resume, ...prev]);
-      toast.success(`"${file.name}" uploaded & analysed!`);
-      setExpanded(data.resume._id); // auto-expand new upload
-    } catch (err) {
-      toast.error(err.response?.data?.message || 'Upload failed. Please try again.');
-    } finally {
-      setUploading(false);
-    }
-  }, []);
-
-  const { getRootProps, getInputProps, isDragActive } = useDropzone({
-    onDrop,
-    accept: {
-      'application/pdf': ['.pdf'],
-      'application/msword': ['.doc'],
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'],
-    },
-    maxFiles: 1,
-    disabled: uploading,
-  });
-
-  const handleDelete = async (id) => {
-    if (!window.confirm('Delete this resume?')) return;
-    setDeleting(id);
-    try {
-      await resumeAPI.delete(id);
-      setResumes((prev) => prev.filter((r) => r._id !== id));
-      if (expanded === id) setExpanded(null);
-      toast.success('Resume deleted');
-    } catch {
-      toast.error('Failed to delete resume');
-    } finally {
-      setDeleting(null);
-    }
-  };
-
-  const handleSetDefault = async (id) => {
-    try {
-      await resumeAPI.setDefault(id);
-      setResumes((prev) => prev.map((r) => ({ ...r, isDefault: r._id === id })));
-      toast.success('Default resume updated');
-    } catch {
-      toast.error('Failed to update default');
-    }
-  };
-
-  const handleReparse = async (id, jobDescription) => {
-    const toastId = toast.loading('AI is parsing your resume…');
-    try {
-      const { data } = await resumeAPI.parse(id, jobDescription);
-      setResumes((prev) =>
-        prev.map((r) => r._id === id ? { ...r, parsedData: data.parsedData, isParsed: true } : r)
-      );
-      toast.success('Resume parsed successfully!', { id: toastId });
-    } catch (err) {
-      toast.error(err.response?.data?.message || 'Parsing failed.', { id: toastId });
-      throw err;
-    }
-  };
-
-  return (
-    <div className="max-w-2xl mx-auto space-y-6 animate-fade-in">
-      <div>
-        <h2 className="text-2xl font-display font-bold text-white">My Resumes</h2>
-        <p className="text-slate-400 mt-1">Upload your resume so AI can personalise your interview questions.</p>
-      </div>
+    <div className="space-y-8 animate-fade-in">
+      <PageHeader
+        eyebrow="Prepare"
+        title="Resumes"
+        description="Every question is grounded in your resume. Files are stored privately — only you can download them."
+      />
 
       {/* Dropzone */}
       <div
         {...getRootProps()}
-        className={`border-2 border-dashed rounded-2xl p-10 text-center cursor-pointer transition-all duration-200
-          ${isDragActive ? 'border-brand-500 bg-brand-600/10' : 'border-surface-border hover:border-brand-500/60 hover:bg-surface-hover'}
-          ${uploading ? 'opacity-60 cursor-not-allowed' : ''}`}
+        className={cn(
+          'relative overflow-hidden rounded-r28 border-2 border-dashed p-8 text-center transition-colors sm:p-10',
+          isDragActive ? 'border-brand bg-brand-50' : 'border-line bg-white hover:border-ink/40',
+          upload && 'pointer-events-none',
+        )}
       >
-        <input {...getInputProps()} />
-        <div className="flex flex-col items-center gap-3">
-          {uploading ? (
-            <Loader2 className="w-10 h-10 text-brand-400 animate-spin" />
-          ) : (
-            <div className={`p-4 rounded-2xl ${isDragActive ? 'bg-brand-600/30' : 'bg-surface-border/50'} transition-colors`}>
-              <Upload className={`w-8 h-8 ${isDragActive ? 'text-brand-400' : 'text-slate-500'}`} />
-            </div>
-          )}
-          <div>
-            <p className="font-semibold text-white">
-              {uploading ? 'Uploading & analysing…' : isDragActive ? 'Drop your resume here' : 'Drag & drop your resume'}
-            </p>
-            <p className="text-slate-500 text-sm mt-1">or <span className="text-brand-400">click to browse</span></p>
+        <input {...getInputProps()} aria-label="Upload resume PDF" />
+        {upload ? (
+          <div className="mx-auto max-w-sm" role="status">
+            <span className="mx-auto grid h-12 w-12 place-items-center rounded-r14 bg-lime"><Upload size={20} aria-hidden="true" /></span>
+            <p className="mt-4 truncate text-[16px] font-medium">{upload.name}</p>
+            <p className="mono-label mt-1 text-muted">{upload.phase === 'uploading' ? `Uploading · ${upload.progress}%` : 'Extracting text & skills…'}</p>
+            <ProgressBar className="mt-4" value={upload.phase === 'uploading' ? upload.progress : 100} tone={upload.phase === 'uploading' ? 'blue' : 'lime'} label="Upload progress" />
           </div>
-          <p className="text-xs text-slate-600">PDF, DOC, DOCX • Max 5MB</p>
-        </div>
+        ) : (
+          <>
+            <span className={cn('mx-auto grid h-12 w-12 place-items-center rounded-r14', isDragActive ? 'bg-brand text-white' : 'bg-stone')}>
+              <Upload size={20} aria-hidden="true" />
+            </span>
+            <p className="mt-4 text-[20px] font-medium tracking-tight1">{isDragActive ? 'Drop your resume' : 'Drag your resume here'}</p>
+            <p className="mt-1 text-[14px] text-muted">PDF only · up to 5 MB</p>
+            <Button variant="ink" className="mt-5" icon={Upload} onClick={open}>Choose a PDF</Button>
+          </>
+        )}
       </div>
 
-      {/* Resume list */}
-      {loading ? (
-        <div className="space-y-3">
-          {[...Array(2)].map((_, i) => (
-            <div key={i} className="card p-5 animate-pulse">
-              <div className="h-4 bg-surface-border rounded w-1/2 mb-2" />
-              <div className="h-3 bg-surface-border rounded w-1/3" />
-            </div>
-          ))}
-        </div>
+      {uploadError && <Alert tone="error" icon={AlertCircle} title="Upload didn’t work">{uploadError}</Alert>}
+
+      {/* List */}
+      {isLoading ? (
+        <SkeletonList rows={2} />
+      ) : isError ? (
+        <ErrorState title="Couldn’t load your resumes" description={getErrorMessage(error)} onRetry={refetch} />
       ) : resumes.length === 0 ? (
-        <div className="card p-10 text-center">
-          <FileText className="w-12 h-12 text-slate-600 mx-auto mb-3" />
-          <p className="text-slate-500 text-sm">No resumes uploaded yet</p>
-        </div>
+        <EmptyState compact icon={FileText} title="No resumes yet" description="Upload a PDF above — we’ll extract your skills and experience so questions fit you." />
       ) : (
-        <div className="space-y-3">
-          <p className="text-slate-400 text-sm">{resumes.length} resume{resumes.length !== 1 ? 's' : ''}</p>
-          <AnimatePresence>
+        <section>
+          <p className="mono-label mb-3 text-muted">{resumes.length} resume{resumes.length === 1 ? '' : 's'}</p>
+          <ul className="space-y-3">
             {resumes.map((resume) => {
-              const ps    = PARSE_STATUS[resume.parseStatus] || PARSE_STATUS.pending;
-              const PsIcon = ps.icon;
+              const ps = PARSE_STATUS[resume.parseStatus] || PARSE_STATUS.pending;
               const isOpen = expanded === resume._id;
-
+              const busy = busyId === resume._id;
               return (
-                <motion.div
-                  key={resume._id}
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, x: -20 }}
-                  className="card p-5"
-                >
-                  {/* Header row */}
-                  <div className="flex items-center justify-between gap-4">
-                    <div className="flex items-start gap-4 min-w-0">
-                      <div className={`p-2.5 rounded-xl flex-shrink-0 ${resume.isDefault ? 'bg-amber-600/20' : 'bg-brand-600/20'}`}>
-                        <FileText className={`w-5 h-5 ${resume.isDefault ? 'text-amber-400' : 'text-brand-400'}`} />
-                      </div>
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2 mb-1">
-                          <p className="font-medium text-white text-sm truncate">{resume.originalName}</p>
-                          {resume.isDefault && (
-                            <span className="badge bg-amber-600/20 text-amber-300 border-amber-500/30">
-                              <Star className="w-3 h-3" /> Default
-                            </span>
-                          )}
-                          {resume.isParsed && (
-                            <span className="badge bg-emerald-600/20 text-emerald-300 border-emerald-500/30 text-xs">
-                              ✦ AI Parsed
-                            </span>
-                          )}
-                        </div>
-                        <div className="flex flex-wrap items-center gap-3 text-xs">
-                          <span className={`badge ${ps.cls} flex items-center gap-1`}>
-                            <PsIcon className={`w-3 h-3 ${resume.parseStatus === 'pending' ? 'animate-spin' : ''}`} />
-                            {ps.label}
-                          </span>
-                          {resume.fileSize && (
-                            <span className="text-slate-500">{(resume.fileSize / 1024).toFixed(0)} KB</span>
-                          )}
-                          <span className="text-slate-500">
-                            {new Date(resume.createdAt).toLocaleDateString()}
-                          </span>
+                <li key={resume._id}>
+                  <Card className="p-5">
+                    <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="flex min-w-0 items-start gap-4">
+                        <span className={cn('grid h-11 w-11 flex-shrink-0 place-items-center rounded-r14', resume.isDefault ? 'bg-lime' : 'bg-stone-2')}>
+                          <FileText size={18} aria-hidden="true" />
+                        </span>
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="truncate text-[16px] font-medium">{resume.originalName}</p>
+                            {resume.isDefault && <Pill tone="lime" mono icon={Star}>Default</Pill>}
+                          </div>
+                          <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[12.5px] text-muted">
+                            <Pill tone={ps.tone}>{ps.label}</Pill>
+                            {resume.isParsed && <Pill tone="blue">AI structured</Pill>}
+                            {resume.fileSize ? <span>{Math.max(1, Math.round(resume.fileSize / 1024))} KB</span> : null}
+                            <span>{formatDate(resume.createdAt)}</span>
+                          </div>
                         </div>
                       </div>
-                    </div>
-
-                    {/* Actions */}
-                    <div className="flex items-center gap-1 flex-shrink-0">
-                      {resume.parseStatus === 'parsed' && (
-                        <button
+                      <div className="flex flex-shrink-0 flex-wrap items-center gap-1.5 self-end sm:self-auto">
+                        <Button size="sm" variant="soft" icon={Download} onClick={() => handleDownload(resume)} disabled={busy}>Download</Button>
+                        {!resume.isDefault && (
+                          <Button size="sm" variant="soft" icon={Star} onClick={() => handleSetDefault(resume)} disabled={busy}>Make default</Button>
+                        )}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          iconOnly
+                          icon={Trash2}
+                          aria-label={`Delete ${resume.originalName}`}
+                          onClick={() => handleDelete(resume)}
+                          loading={busy}
+                          className="hover:bg-coral-soft hover:text-coral"
+                        />
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          iconOnly
+                          icon={ChevronDown}
+                          aria-label={isOpen ? 'Hide details' : 'Show extracted details'}
+                          aria-expanded={isOpen}
                           onClick={() => setExpanded(isOpen ? null : resume._id)}
-                          className="btn-ghost p-2 text-brand-400"
-                          title={isOpen ? 'Collapse' : 'View parsed data'}
-                        >
-                          {isOpen ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-                        </button>
-                      )}
-                      <a href={`https://docs.google.com/viewer?url=${encodeURIComponent(resume.fileUrl)}`} target="_blank" rel="noreferrer"
-                        className="btn-ghost p-2" title="View file">
-                        <ExternalLink className="w-4 h-4" />
-                      </a>
-                      {!resume.isDefault && (
-                        <button onClick={() => handleSetDefault(resume._id)}
-                          className="btn-ghost p-2 text-amber-400" title="Set as default">
-                          <Star className="w-4 h-4" />
-                        </button>
-                      )}
-                      <button onClick={() => handleDelete(resume._id)} disabled={deleting === resume._id}
-                        className="btn-danger p-2 aspect-square">
-                        {deleting === resume._id
-                          ? <Loader2 className="w-4 h-4 animate-spin" />
-                          : <Trash2 className="w-4 h-4" />}
-                      </button>
+                          className={cn('transition-transform', isOpen && 'rotate-180')}
+                        />
+                      </div>
                     </div>
-                  </div>
-
-                  {/* Parsed data panel (expandable) */}
-                  <AnimatePresence>
                     {isOpen && (
-                      <motion.div
-                        initial={{ opacity: 0, height: 0 }}
-                        animate={{ opacity: 1, height: 'auto' }}
-                        exit={{ opacity: 0, height: 0 }}
-                        className="overflow-hidden"
-                      >
-                        <ParsedDataPanel resume={resume} onReparse={handleReparse} />
-                      </motion.div>
+                      <div className="mt-5 border-t border-line-2 pt-5 animate-fade-in">
+                        {resume.parseStatus === 'failed' ? (
+                          <Alert tone="warn" icon={AlertCircle} title="We couldn’t read text from this PDF">
+                            It may be a scanned image. Export a text-based PDF from your editor and upload it again.
+                          </Alert>
+                        ) : (
+                          <ParsedData resume={resume} onReparse={() => { setReparse(resume); setJdInput(''); }} />
+                        )}
+                      </div>
                     )}
-                  </AnimatePresence>
-                </motion.div>
+                  </Card>
+                </li>
               );
             })}
-          </AnimatePresence>
-        </div>
+          </ul>
+        </section>
       )}
+
+      <Modal
+        open={!!reparse}
+        onClose={() => !parsing && setReparse(null)}
+        title="Re-parse resume"
+        description="Optionally paste a job description to match required skills and responsibilities."
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setReparse(null)} disabled={parsing}>Cancel</Button>
+            <Button variant="ink" icon={RefreshCw} loading={parsing} onClick={handleReparse}>Parse</Button>
+          </>
+        }
+      >
+        <Field label="Job description" hint="Optional">
+          <Textarea rows={7} value={jdInput} onChange={(e) => setJdInput(e.target.value)} placeholder="Paste a job description…" />
+        </Field>
+      </Modal>
     </div>
   );
 }

@@ -1,162 +1,208 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
-import { motion } from 'framer-motion';
-import { User, Mail, Lock, Save, Loader2, CheckCircle } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
+import { useNavigate } from 'react-router-dom';
+import { AlertCircle, CreditCard, KeyRound, Trash2, UserRound } from 'lucide-react';
+import toast from 'react-hot-toast';
 import { userAPI } from '@/services/api';
 import { useAuthStore } from '@/store/auth-store';
-import toast from 'react-hot-toast';
+import { useBillingMe } from '@/hooks/use-billing';
+import { Alert, Avatar, Button, Card, Field, Input, PageHeader, PasswordInput, Pill, ProgressBar } from '@/components/ui';
+import { formatDate, getErrorMessage } from '@/utils';
+import { auth, firebaseMode } from '@/lib/firebase';
+
+const PASSWORD_RULE = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/;
 
 export default function ProfilePage() {
-  const { user, updateUser } = useAuthStore();
-  const [saving, setSaving] = useState(false);
-  const [savingPwd, setSavingPwd] = useState(false);
+  const { user, updateUser, logout, changeFirebasePassword, deleteFirebaseAccount } = useAuthStore();
+  const navigate = useNavigate();
+  const [profileError, setProfileError] = useState('');
+  const [passwordError, setPasswordError] = useState('');
+  const [showDelete, setShowDelete] = useState(false);
+  const [deletePassword, setDeletePassword] = useState('');
+  const [deleteError, setDeleteError] = useState('');
+  const [deleting, setDeleting] = useState(false);
+  const billing = useBillingMe();
 
-  const { register, handleSubmit, formState: { errors } } = useForm({
-    defaultValues: { name: user?.name || '', email: user?.email || '' },
-  });
+  // Refresh the stored user with server data (session counts, name changes elsewhere).
+  const profile = useQuery({ queryKey: ['profile'], queryFn: () => userAPI.getProfile().then((r) => r.data.user) });
+  useEffect(() => {
+    if (profile.data) updateUser({ name: profile.data.name, totalSessions: profile.data.totalSessions, createdAt: profile.data.createdAt, role: profile.data.role });
+  }, [profile.data]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const {
-    register: regPwd, handleSubmit: handlePwd, watch: watchPwd,
-    reset: resetPwd, formState: { errors: pwdErrors }
-  } = useForm();
+    register, handleSubmit, reset, formState: { errors, isSubmitting, isDirty },
+  } = useForm({ defaultValues: { name: user?.name || '' } });
+
+  useEffect(() => { if (profile.data?.name) reset({ name: profile.data.name }); }, [profile.data?.name, reset]);
+
+  const {
+    register: regPwd, handleSubmit: handlePwd, watch: watchPwd, reset: resetPwd, setError: setPwdError,
+    formState: { errors: pwdErrors, isSubmitting: savingPwd },
+  } = useForm({ defaultValues: { currentPassword: '', newPassword: '', confirmPassword: '' } });
   const newPassword = watchPwd('newPassword');
 
   const onProfileSave = async (data) => {
-    setSaving(true);
+    setProfileError('');
     try {
-      const { data: res } = await userAPI.updateProfile({ name: data.name });
+      const { data: res } = await userAPI.updateProfile({ name: data.name.trim() });
       updateUser({ name: res.user.name });
-      toast.success('Profile updated!');
+      reset({ name: res.user.name });
+      toast.success('Profile updated');
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Update failed');
-    } finally {
-      setSaving(false);
+      setProfileError(getErrorMessage(err, 'Couldn’t update your profile'));
     }
   };
 
   const onPasswordSave = async (data) => {
-    setSavingPwd(true);
+    setPasswordError('');
     try {
-      await userAPI.changePassword({
-        currentPassword: data.currentPassword,
-        newPassword: data.newPassword,
-      });
-      toast.success('Password changed successfully!');
+      if (firebaseMode) await changeFirebasePassword({ currentPassword: data.currentPassword, newPassword: data.newPassword });
+      else await userAPI.changePassword({ currentPassword: data.currentPassword, newPassword: data.newPassword });
+      toast.success('Password changed');
       resetPwd();
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Password change failed');
-    } finally {
-      setSavingPwd(false);
+      const message = getErrorMessage(err, 'Couldn’t change your password');
+      if (err.response?.status === 401) setPwdError('currentPassword', { type: 'server', message });
+      else setPasswordError(message);
     }
   };
 
+  const onDeleteAccount = async (event) => {
+    event.preventDefault();
+    setDeleteError('');
+    setDeleting(true);
+    try {
+      if (firebaseMode) await deleteFirebaseAccount(deletePassword);
+      else await userAPI.deleteAccount(deletePassword);
+      await logout();
+      navigate('/', { replace: true });
+      toast.success('Your account has been deleted');
+    } catch (err) {
+      setDeleteError(getErrorMessage(err, 'Could not delete your account'));
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const allowance = billing.data?.allowance;
+  const plan = billing.data?.subscription?.planId;
+  const passwordAccount = !firebaseMode || auth?.currentUser?.providerData.some((provider) => provider.providerId === 'password');
+
   return (
-    <div className="max-w-2xl mx-auto space-y-6 animate-fade-in">
-      {/* Avatar / Info */}
-      <div className="card p-6 flex items-center gap-5">
-        <div className="w-20 h-20 rounded-2xl bg-gradient-brand flex items-center justify-center text-white font-display font-bold text-3xl flex-shrink-0">
-          {user?.name?.charAt(0).toUpperCase()}
-        </div>
-        <div>
-          <h2 className="text-xl font-display font-bold text-white">{user?.name}</h2>
-          <p className="text-slate-400 text-sm">{user?.email}</p>
-          <div className="flex items-center gap-3 mt-2">
-            <span className="badge badge-brand capitalize">{user?.role}</span>
-            <span className="text-xs text-slate-500">{user?.totalSessions} sessions completed</span>
-          </div>
-        </div>
-      </div>
+    <div className="space-y-8 animate-fade-in">
+      <PageHeader eyebrow="Account" title="Profile" description="Your details, password and plan." />
 
-      {/* Profile Form */}
-      <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="card p-6">
-        <h3 className="font-semibold text-white mb-5 flex items-center gap-2">
-          <User className="w-5 h-5 text-brand-400" /> Personal Information
-        </h3>
-
-        <form onSubmit={handleSubmit(onProfileSave)} className="space-y-4">
-          <div>
-            <label className="form-label">Full Name</label>
-            <input type="text" className="form-input"
-              {...register('name', { required: 'Name is required', minLength: { value: 2, message: 'Min 2 characters' } })} />
-            {errors.name && <p className="form-error">{errors.name.message}</p>}
-          </div>
-          <div>
-            <label className="form-label">Email Address</label>
-            <input type="email" className="form-input bg-surface-hover opacity-60 cursor-not-allowed"
-              disabled {...register('email')} />
-            <p className="text-slate-500 text-xs mt-1">Email cannot be changed</p>
-          </div>
-          <div className="flex justify-end">
-            <button type="submit" disabled={saving} className="btn-primary">
-              {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-              {saving ? 'Saving...' : 'Save Changes'}
-            </button>
-          </div>
-        </form>
-      </motion.div>
-
-      {/* Password Form */}
-      <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="card p-6">
-        <h3 className="font-semibold text-white mb-5 flex items-center gap-2">
-          <Lock className="w-5 h-5 text-brand-400" /> Change Password
-        </h3>
-
-        <form onSubmit={handlePwd(onPasswordSave)} className="space-y-4">
-          <div>
-            <label className="form-label">Current Password</label>
-            <input type="password" className="form-input"
-              {...regPwd('currentPassword', { required: 'Current password is required' })} />
-            {pwdErrors.currentPassword && <p className="form-error">{pwdErrors.currentPassword.message}</p>}
-          </div>
-          <div>
-            <label className="form-label">New Password</label>
-            <input type="password" className="form-input"
-              {...regPwd('newPassword', {
-                required: 'New password is required',
-                minLength: { value: 8, message: 'Min 8 characters' },
-                pattern: {
-                  value: /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/,
-                  message: 'Must include uppercase, lowercase, and number',
-                },
-              })} />
-            {pwdErrors.newPassword && <p className="form-error">{pwdErrors.newPassword.message}</p>}
-          </div>
-          <div>
-            <label className="form-label">Confirm New Password</label>
-            <input type="password" className="form-input"
-              {...regPwd('confirmPassword', {
-                required: 'Please confirm password',
-                validate: (v) => v === newPassword || 'Passwords do not match',
-              })} />
-            {pwdErrors.confirmPassword && <p className="form-error">{pwdErrors.confirmPassword.message}</p>}
-          </div>
-          <div className="flex justify-end">
-            <button type="submit" disabled={savingPwd} className="btn-primary">
-              {savingPwd ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
-              {savingPwd ? 'Updating...' : 'Update Password'}
-            </button>
-          </div>
-        </form>
-      </motion.div>
-
-      {/* Account Info */}
-      <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }} className="card p-6">
-        <h3 className="font-semibold text-white mb-4 flex items-center gap-2">
-          <Mail className="w-5 h-5 text-brand-400" /> Account Details
-        </h3>
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_340px]">
         <div className="space-y-3">
-          {[
-            { label: 'Member Since', value: new Date(user?.createdAt).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }) },
-            { label: 'Account Type', value: user?.role === 'admin' ? 'Administrator' : 'Candidate' },
-            { label: 'Total Sessions', value: user?.totalSessions ?? 0 },
-          ].map(({ label, value }) => (
-            <div key={label} className="flex justify-between items-center py-2 border-b border-surface-border last:border-0">
-              <span className="text-slate-400 text-sm">{label}</span>
-              <span className="text-white text-sm font-medium">{value}</span>
-            </div>
-          ))}
+          <Card className="p-6 sm:p-7">
+            <div className="flex items-center gap-2"><UserRound size={17} aria-hidden="true" /><h2 className="text-[18px] font-medium tracking-tight1">Personal details</h2></div>
+            <form onSubmit={handleSubmit(onProfileSave)} noValidate className="mt-6 space-y-4">
+              {profileError && <Alert tone="error" icon={AlertCircle}>{profileError}</Alert>}
+              <Field label="Full name" error={errors.name?.message}>
+                <Input
+                  autoComplete="name"
+                  {...register('name', {
+                    validate: (v) => v.trim().length >= 2 || 'Name must be at least 2 characters',
+                    maxLength: { value: 50, message: 'Name must be 50 characters or fewer' },
+                  })}
+                />
+              </Field>
+              <Field label="Email" hint="Your email is your login and can’t be changed here.">
+                <Input type="email" value={user?.email || ''} disabled readOnly />
+              </Field>
+              <div className="flex justify-end">
+                <Button type="submit" variant="ink" loading={isSubmitting} disabled={!isDirty}>Save changes</Button>
+              </div>
+            </form>
+          </Card>
+
+          {user?.role === 'candidate' && <Card className="p-6 sm:p-7">
+            <div className="flex items-center gap-2"><Trash2 size={17} aria-hidden="true" /><h2 className="text-[18px] font-medium">Delete account</h2></div>
+            <p className="mt-3 text-[13.5px] text-muted">This removes your resumes, interviews and answers, and closes your paid pass. Payment records are retained without your contact details for reconciliation.</p>
+            {showDelete ? (
+              <form onSubmit={onDeleteAccount} className="mt-5 space-y-4">
+                {deleteError && <Alert tone="error" icon={AlertCircle}>{deleteError}</Alert>}
+                {passwordAccount && <Field label="Current password" hint="Enter your password to confirm account deletion.">
+                  <PasswordInput autoComplete="current-password" required value={deletePassword} onChange={(event) => setDeletePassword(event.target.value)} />
+                </Field>}
+                <div className="flex flex-wrap gap-2">
+                  <Button type="submit" variant="danger" loading={deleting} disabled={passwordAccount && !deletePassword}>Delete my account</Button>
+                  <Button type="button" variant="soft" onClick={() => { setShowDelete(false); setDeletePassword(''); setDeleteError(''); }}>Cancel</Button>
+                </div>
+              </form>
+            ) : <Button type="button" variant="soft" className="mt-5" onClick={() => setShowDelete(true)}>Delete account</Button>}
+          </Card>}
+
+          {passwordAccount && <Card className="p-6 sm:p-7">
+            <div className="flex items-center gap-2"><KeyRound size={17} aria-hidden="true" /><h2 className="text-[18px] font-medium tracking-tight1">Change password</h2></div>
+            <form onSubmit={handlePwd(onPasswordSave)} noValidate className="mt-6 space-y-4">
+              {passwordError && <Alert tone="error" icon={AlertCircle}>{passwordError}</Alert>}
+              <Field label="Current password" error={pwdErrors.currentPassword?.message}>
+                <PasswordInput autoComplete="current-password" {...regPwd('currentPassword', { required: 'Enter your current password' })} />
+              </Field>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="New password" error={pwdErrors.newPassword?.message} hint="8+ characters with upper, lower and a number.">
+                  <PasswordInput
+                    autoComplete="new-password"
+                    {...regPwd('newPassword', {
+                      required: 'Choose a new password',
+                      minLength: { value: 8, message: 'Use at least 8 characters' },
+                      pattern: { value: PASSWORD_RULE, message: 'Include upper, lower case and a number' },
+                    })}
+                  />
+                </Field>
+                <Field label="Confirm new password" error={pwdErrors.confirmPassword?.message}>
+                  <PasswordInput
+                    autoComplete="new-password"
+                    {...regPwd('confirmPassword', {
+                      required: 'Confirm your new password',
+                      validate: (v) => v === newPassword || 'Passwords don’t match',
+                    })}
+                  />
+                </Field>
+              </div>
+              <div className="flex justify-end">
+                <Button type="submit" variant="ink" loading={savingPwd}>Update password</Button>
+              </div>
+            </form>
+          </Card>}
         </div>
-      </motion.div>
+
+        <aside className="space-y-3">
+          <Card tone="ink" className="p-6">
+            <Avatar name={user?.name} size={56} />
+            <p className="mt-5 text-[22px] font-medium leading-tight tracking-tight1">{user?.name}</p>
+            <p className="mt-1 break-all text-[13.5px] text-on-dark">{user?.email}</p>
+            <dl className="mt-6 space-y-2.5 border-t border-ink-line pt-5 text-[14px]">
+              <div className="flex justify-between"><dt className="text-on-dark">Member since</dt><dd>{formatDate(user?.createdAt)}</dd></div>
+              <div className="flex justify-between"><dt className="text-on-dark">Sessions completed</dt><dd className="tabular">{user?.totalSessions ?? 0}</dd></div>
+              <div className="flex justify-between"><dt className="text-on-dark">Account</dt><dd className="capitalize">{user?.role === 'candidate' ? 'Candidate' : user?.role?.replace('_', ' ')}</dd></div>
+            </dl>
+          </Card>
+
+          <Card className="p-6">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2"><CreditCard size={16} aria-hidden="true" /><p className="text-[16px] font-medium">Plan</p></div>
+              <Pill tone={plan ? 'lime' : 'stone'} mono>{plan ? plan.name : 'Free'}</Pill>
+            </div>
+            {billing.isLoading ? (
+              <div className="skeleton mt-4 h-10" />
+            ) : allowance ? (
+              <>
+                <p className="mt-4 text-[14px]"><span className="font-medium tabular">{allowance.remaining}</span> of {allowance.limit} interviews left {plan ? 'on your pass' : 'this month'}</p>
+                <ProgressBar className="mt-3" value={allowance.used} max={allowance.limit || 1} label="Interviews used" />
+                {billing.data?.subscription?.currentPeriodEnd && (
+                  <p className="mt-3 text-[12.5px] text-muted">Pass valid until {formatDate(billing.data.subscription.currentPeriodEnd)}</p>
+                )}
+              </>
+            ) : (
+              <p className="mt-4 text-[13.5px] text-muted">Plan details are unavailable right now.</p>
+            )}
+            <Button to="/pricing" variant="soft" size="sm" className="mt-5 w-full">Plans & billing</Button>
+          </Card>
+        </aside>
+      </div>
     </div>
   );
 }

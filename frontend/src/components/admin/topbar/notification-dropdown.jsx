@@ -1,186 +1,111 @@
 /**
- * components/admin/topbar/NotificationDropdown.jsx
- *
- * Notification bell icon with a dropdown panel.
- * Features:
- *  - Bell icon with unread count badge
- *  - Dropdown with notification items (type, message, time)
- *  - "Mark all read" action
- *  - Closes on outside click (via useRef + useEffect)
- *
- * In Phase 2, notifications are static demo data.
- * In a later phase, replace with a real-time API call.
+ * NotificationDropdown — recent platform activity from GET /admin/stats
+ * (new sign-ups, completed sessions, resume uploads). "Mark all read" stores a
+ * last-seen timestamp locally; nothing here is demo data.
  */
 
-import { useState, useRef, useEffect } from 'react';
-import { Bell, Users, Briefcase, AlertCircle, CheckCheck, X } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
+import { Bell, CheckCheck, UserPlus, CheckCircle2, FileText } from 'lucide-react';
+import { getAdminStats } from '@/services/admin.service';
+import { Dropdown } from '@/components/ui';
+import { cn, timeAgo } from '@/utils';
 
-// Demo notifications — replace with API call in a later phase
-const DEMO_NOTIFICATIONS = [
-  {
-    id: 1,
-    type: 'user',
-    icon: Users,
-    iconColor: 'text-blue-400',
-    iconBg: 'bg-blue-500/10',
-    title: 'New user registered',
-    message: 'sarah.dev@gmail.com just signed up',
-    time: '2 min ago',
-    read: false,
-  },
-  {
-    id: 2,
-    type: 'interview',
-    icon: Briefcase,
-    iconColor: 'text-purple-400',
-    iconBg: 'bg-purple-500/10',
-    title: 'Interview completed',
-    message: 'John Doe completed Senior React Developer interview',
-    time: '15 min ago',
-    read: false,
-  },
-  {
-    id: 3,
-    type: 'alert',
-    icon: AlertCircle,
-    iconColor: 'text-amber-400',
-    iconBg: 'bg-amber-500/10',
-    title: 'High session load',
-    message: '50+ active interview sessions running',
-    time: '1 hr ago',
-    read: true,
-  },
-];
+const SEEN_KEY = 'admin-notifications-seen-at';
+const ICONS = { user: UserPlus, session: CheckCircle2, resume: FileText };
+const TONES = { user: 'bg-brand-50 text-brand-600', session: 'bg-lime-soft text-lime-ok', resume: 'bg-stone text-ink' };
 
 export default function NotificationDropdown() {
-  const [open, setOpen]             = useState(false);
-  const [notifications, setNotifs]  = useState(DEMO_NOTIFICATIONS);
-  const dropdownRef                 = useRef(null);
+  const [seenAt, setSeenAt] = useState(() => Number(localStorage.getItem(SEEN_KEY) || 0));
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ['admin-stats'],
+    queryFn: getAdminStats,
+    staleTime: 60_000,
+  });
 
-  const unreadCount = notifications.filter((n) => !n.read).length;
-
-  // Close on outside click
-  useEffect(() => {
-    const handler = (e) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target)) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, []);
+  const items = data?.activities ?? [];
+  const unread = useMemo(
+    () => items.filter((a) => new Date(a.timestamp).getTime() > seenAt).length,
+    [items, seenAt],
+  );
 
   const markAllRead = () => {
-    setNotifs((prev) => prev.map((n) => ({ ...n, read: true })));
-  };
-
-  const dismiss = (id) => {
-    setNotifs((prev) => prev.filter((n) => n.id !== id));
+    const now = Date.now();
+    localStorage.setItem(SEEN_KEY, String(now));
+    setSeenAt(now);
   };
 
   return (
-    <div className="relative" ref={dropdownRef}>
-
-      {/* Bell button */}
-      <button
-        id="admin-notifications-btn"
-        onClick={() => setOpen(!open)}
-        className="relative w-9 h-9 rounded-xl bg-white/5 border border-white/8
-                   flex items-center justify-center text-slate-400
-                   hover:text-white hover:bg-white/10 hover:border-white/15
-                   transition-all duration-200"
-        aria-label="Notifications"
-      >
-        <Bell size={16} />
-        {unreadCount > 0 && (
-          <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full
-                           bg-red-500 text-white text-[9px] font-bold
-                           flex items-center justify-center">
-            {unreadCount}
-          </span>
-        )}
-      </button>
-
-      {/* Dropdown panel */}
-      {open && (
-        <div className="
-          absolute right-0 top-full mt-2 w-80
-          bg-[#12122a] border border-white/10 rounded-2xl shadow-2xl
-          overflow-hidden z-50 animate-in fade-in slide-in-from-top-2 duration-150
-        ">
-          {/* Header */}
-          <div className="flex items-center justify-between px-4 py-3 border-b border-white/8">
-            <div className="flex items-center gap-2">
-              <Bell size={14} className="text-slate-400" />
-              <span className="text-white text-sm font-semibold">Notifications</span>
-              {unreadCount > 0 && (
-                <span className="px-1.5 py-0.5 rounded-full bg-red-500/20 text-red-400 text-[10px] font-bold">
-                  {unreadCount} new
-                </span>
-              )}
-            </div>
-            {unreadCount > 0 && (
-              <button
-                onClick={markAllRead}
-                className="flex items-center gap-1 text-[11px] text-slate-500 hover:text-slate-300 transition-colors"
-              >
-                <CheckCheck size={12} />
-                Mark all read
+    <Dropdown
+      panelClassName="w-[min(360px,calc(100vw-24px))]"
+      trigger={({ toggle, open }) => (
+        <button
+          type="button"
+          onClick={toggle}
+          aria-label={`Notifications${unread ? `, ${unread} unread` : ''}`}
+          aria-expanded={open}
+          className="relative grid h-10 w-10 place-items-center rounded-full border border-line bg-white text-ink transition-colors hover:border-ink"
+        >
+          <Bell size={17} />
+          {unread > 0 && (
+            <span className="absolute -right-0.5 -top-0.5 grid h-[18px] min-w-[18px] place-items-center rounded-full bg-lime px-1 font-mono text-[10px] text-ink ring-2 ring-white">
+              {unread}
+            </span>
+          )}
+        </button>
+      )}
+    >
+      {({ close }) => (
+        <div>
+          <div className="flex items-center justify-between border-b border-line-2 px-4 py-3">
+            <span className="mono-label text-muted">Recent activity</span>
+            {unread > 0 && (
+              <button type="button" onClick={markAllRead} className="flex items-center gap-1 text-[12px] text-brand-600 hover:text-ink">
+                <CheckCheck size={13} /> Mark all read
               </button>
             )}
           </div>
-
-          {/* Notification list */}
-          <div className="max-h-72 overflow-y-auto divide-y divide-white/5">
-            {notifications.length === 0 ? (
-              <div className="py-10 text-center">
-                <Bell size={24} className="text-slate-700 mx-auto mb-2" />
-                <p className="text-slate-500 text-sm">No notifications</p>
+          <div className="max-h-80 overflow-y-auto">
+            {isLoading ? (
+              <div className="space-y-3 p-4">
+                {[0, 1, 2].map((i) => <div key={i} className="skeleton h-10" />)}
               </div>
+            ) : isError ? (
+              <p className="px-4 py-8 text-center text-[13.5px] text-coral">Couldn’t load activity.</p>
+            ) : items.length === 0 ? (
+              <p className="px-4 py-10 text-center text-[13.5px] text-muted">No platform activity yet.</p>
             ) : (
-              notifications.map((n) => {
-                const Icon = n.icon;
-                return (
-                  <div
-                    key={n.id}
-                    className={`flex items-start gap-3 px-4 py-3 hover:bg-white/[0.03] transition-colors ${
-                      !n.read ? 'bg-white/[0.02]' : ''
-                    }`}
-                  >
-                    <div className={`w-8 h-8 rounded-lg ${n.iconBg} flex items-center justify-center flex-shrink-0 mt-0.5`}>
-                      <Icon size={14} className={n.iconColor} />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-1.5">
-                        <p className="text-white text-xs font-semibold truncate">{n.title}</p>
-                        {!n.read && (
-                          <span className="w-1.5 h-1.5 rounded-full bg-red-500 flex-shrink-0" />
-                        )}
+              <ul className="divide-y divide-line-2">
+                {items.map((a) => {
+                  const Icon = ICONS[a.type] || Bell;
+                  const isNew = new Date(a.timestamp).getTime() > seenAt;
+                  return (
+                    <li key={a.id} className={cn('flex items-start gap-3 px-4 py-3', isNew && 'bg-paper/70')}>
+                      <span className={cn('mt-0.5 grid h-8 w-8 flex-shrink-0 place-items-center rounded-r9', TONES[a.type] || 'bg-stone')}>
+                        <Icon size={15} aria-hidden="true" />
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <p className="flex items-center gap-1.5 text-[13.5px] font-medium">
+                          <span className="truncate">{a.title}</span>
+                          {isNew && <span className="h-1.5 w-1.5 flex-shrink-0 rounded-full bg-brand" aria-label="new" />}
+                        </p>
+                        <p className="mt-0.5 line-clamp-2 text-[12.5px] text-muted">{a.message}</p>
+                        <p className="mt-1 font-mono text-[10.5px] uppercase tracking-mono text-faint">{timeAgo(a.timestamp)}</p>
                       </div>
-                      <p className="text-slate-500 text-xs mt-0.5 leading-relaxed line-clamp-2">{n.message}</p>
-                      <p className="text-slate-600 text-[10px] mt-1">{n.time}</p>
-                    </div>
-                    <button
-                      onClick={() => dismiss(n.id)}
-                      className="text-slate-700 hover:text-slate-400 transition-colors flex-shrink-0 mt-0.5"
-                      aria-label="Dismiss"
-                    >
-                      <X size={12} />
-                    </button>
-                  </div>
-                );
-              })
+                    </li>
+                  );
+                })}
+              </ul>
             )}
           </div>
-
-          {/* Footer */}
-          <div className="px-4 py-2.5 border-t border-white/8 text-center">
-            <button className="text-xs text-slate-500 hover:text-slate-300 transition-colors">
-              View all notifications
-            </button>
+          <div className="border-t border-line-2 px-4 py-2.5 text-center">
+            <Link to="/admin" onClick={close} className="font-mono text-[10.5px] uppercase tracking-mono text-muted hover:text-ink">
+              Open dashboard
+            </Link>
           </div>
         </div>
       )}
-    </div>
+    </Dropdown>
   );
 }

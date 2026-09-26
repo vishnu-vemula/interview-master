@@ -1,764 +1,921 @@
 /**
- * pages/admin/AdminUsersPage.jsx
- *
- * Full-scale admin user management system.
- * Features:
- *  - Dynamic searching, filtering, and backend sorting.
- *  - Premium toggle, Ban / Suspend actions.
- *  - Credit allocation & removal adjustments.
- *  - Interactive slide-out Profile Drawer for user sessions and resume history.
- *  - Selection mechanics for bulk operations (Activate, Deactivate, Ban, Unban, Delete).
- *  - CSV export of table queries.
+ * AdminUsersPage — account management.
+ *  - Search, role + status filters, server-side sort and pagination (GET /admin/users).
+ *  - Profile drawer with counts, resumes and practice sessions (GET /admin/users/:id).
+ *  - Edit modal (PATCH /admin/users/:id) — role changes are super-admin only server-side.
+ *  - Single delete (DELETE /admin/users/:id, super admin only) and bulk
+ *    activate / deactivate / ban / unban / delete (POST /admin/users/bulk, candidates only).
+ *  - CSV export of the current page.
  */
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
+import toast from 'react-hot-toast';
 import {
-  Search, Shield, UserX, UserCheck, Trash2, ChevronLeft, ChevronRight,
-  Edit3, Check, X, CreditCard, Star, Activity, Download, Plus, Minus,
-  ExternalLink, Eye, MoreHorizontal, Ban, AlertOctagon, HelpCircle, FileText, ArrowUpDown
+  Search, Download, RefreshCw, Eye, Edit3, Trash2, Star, UserCheck, UserX, Ban, ShieldCheck,
+  ChevronDown, ArrowUpDown, ArrowUp, ArrowDown, FileText, ExternalLink, Minus, Plus, Users,
+  MessageSquare, Lock,
 } from 'lucide-react';
 import {
-  getAdminUsers, getAdminUser, updateAdminUser, deleteAdminUser, bulkAdminUsersAction
+  getAdminUsers, getAdminUser, updateAdminUser, deleteAdminUser, bulkAdminUsersAction,
 } from '@/services/admin.service';
-import toast from 'react-hot-toast';
+import { useAdminAuth } from '@/context';
+import {
+  Alert, Avatar, Button, Checkbox, Drawer, Dropdown, EmptyState, ErrorState, Field, Input, MenuItem,
+  Modal, PageHeader, Pagination, Pill, ScorePill, Segmented, Select, Skeleton, Switch, TableShell, useConfirm,
+} from '@/components/ui';
+import { cn, formatDate, getErrorMessage, timeAgo } from '@/utils';
 
 const ADMIN_EMAIL = 'admin@interviewmaster.com';
+const PAGE_SIZE = 12;
 
-// ─── Status Badge rendering ───────────────────────────────────────
-function StatusBadge({ isActive, isBanned }) {
-  if (isBanned) {
-    return <span className="badge bg-red-600/20 text-red-300 border border-red-500/30">Banned</span>;
-  }
-  return isActive
-    ? <span className="badge bg-emerald-600/20 text-emerald-300 border border-emerald-500/30">Active</span>
-    : <span className="badge bg-slate-600/20 text-slate-400 border border-slate-500/30">Inactive</span>;
-}
+const ROLE_OPTIONS = [
+  { value: 'candidate', label: 'Candidate' },
+  { value: 'support', label: 'Support' },
+  { value: 'content_manager', label: 'Content manager' },
+  { value: 'admin', label: 'Admin' },
+  { value: 'super_admin', label: 'Super admin' },
+];
+const ROLE_LABEL = Object.fromEntries(ROLE_OPTIONS.map((r) => [r.value, r.label]));
+const ROLE_TONE = { super_admin: 'ink', admin: 'blue', support: 'outline', content_manager: 'outline', candidate: 'stone' };
 
-// ─── Role Badge rendering ─────────────────────────────────────────
-function RoleBadge({ role }) {
-  if (role === 'super_admin') {
-    return <span className="badge bg-amber-600/20 text-amber-300 border border-amber-500/30">Super Admin</span>;
-  }
-  if (role === 'admin') {
-    return <span className="badge bg-red-600/20 text-red-300 border border-red-500/30">Admin</span>;
-  }
-  if (role === 'support') {
-    return <span className="badge bg-teal-600/20 text-teal-300 border border-teal-500/30">Support</span>;
-  }
-  if (role === 'content_manager') {
-    return <span className="badge bg-indigo-600/20 text-indigo-300 border border-indigo-500/30">Content Manager</span>;
-  }
-  return <span className="badge bg-blue-600/20 text-blue-300 border border-blue-500/30">Candidate</span>;
-}
+const STATUS_OPTIONS = [
+  { value: 'all', label: 'All' },
+  { value: 'active', label: 'Active' },
+  { value: 'inactive', label: 'Inactive' },
+  { value: 'banned', label: 'Banned' },
+  { value: 'premium', label: 'Premium' },
+];
 
-// ─── Profile Drawer Component ─────────────────────────────────────
-function UserProfileDrawer({ userId, onClose, onUpdateSuccess }) {
-  const [details, setDetails] = useState(null);
-  const [loading, setLoading] = useState(true);
+const SESSION_STATUS = {
+  started: { tone: 'blue', label: 'Started' },
+  in_progress: { tone: 'blue', label: 'In progress' },
+  evaluating: { tone: 'stone', label: 'Evaluating' },
+  evaluation_failed: { tone: 'coral', label: 'Evaluation failed' },
+  completed: { tone: 'ok', label: 'Completed' },
+  abandoned: { tone: 'stone', label: 'Abandoned' },
+};
 
-  const fetchDetails = useCallback(async () => {
-    setLoading(true);
-    try {
-      const data = await getAdminUser(userId);
-      setDetails(data);
-    } catch {
-      toast.error('Failed to load user activity log.');
-    } finally {
-      setLoading(false);
-    }
-  }, [userId]);
+const PARSE_STATUS = {
+  parsed: { tone: 'ok', label: 'Parsed' },
+  pending: { tone: 'blue', label: 'Pending' },
+  failed: { tone: 'coral', label: 'Failed' },
+};
 
+/** The platform super admin can never be deleted, banned or re-roled from this screen. */
+const isProtectedUser = (u) => u?.email === ADMIN_EMAIL || u?.role === 'super_admin';
+
+const formatBytes = (bytes) => {
+  if (!bytes) return '—';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+};
+
+function useDebounced(value, delay = 300) {
+  const [debounced, setDebounced] = useState(value);
   useEffect(() => {
-    fetchDetails();
-  }, [fetchDetails]);
+    const t = setTimeout(() => setDebounced(value), delay);
+    return () => clearTimeout(t);
+  }, [value, delay]);
+  return debounced;
+}
 
-  if (loading) {
-    return (
-      <div className="fixed inset-y-0 right-0 w-full sm:w-[480px] bg-[#0c0c1e] border-l border-white/10 p-6 z-40 flex items-center justify-center">
-        <div className="animate-pulse flex flex-col items-center gap-3">
-          <div className="w-12 h-12 rounded-full bg-white/5" />
-          <div className="h-4 bg-white/5 rounded w-32" />
-          <div className="h-3 bg-white/5 rounded w-24" />
-        </div>
+function RolePill({ role }) {
+  return <Pill tone={ROLE_TONE[role] || 'stone'} mono>{ROLE_LABEL[role] || 'Candidate'}</Pill>;
+}
+
+function StatusPill({ user }) {
+  if (user?.isBanned) return <Pill tone="coral" mono>Banned</Pill>;
+  return user?.isActive ? <Pill tone="ok" mono>Active</Pill> : <Pill tone="stone" mono>Inactive</Pill>;
+}
+
+function SortHeader({ field, label, sortBy, sortDir, onSort, className }) {
+  const active = sortBy === field;
+  const Icon = !active ? ArrowUpDown : sortDir === 'asc' ? ArrowUp : ArrowDown;
+  return (
+    <th className={className} aria-sort={active ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}>
+      <button
+        type="button"
+        onClick={() => onSort(field)}
+        className={cn('inline-flex items-center gap-1.5 uppercase transition-colors hover:text-ink', active && 'text-ink')}
+      >
+        {label}
+        <Icon size={12} aria-hidden="true" />
+      </button>
+    </th>
+  );
+}
+
+// ─── Profile drawer ────────────────────────────────────────────────
+function DrawerSection({ title, count, children }) {
+  return (
+    <section>
+      <div className="mb-3 flex items-baseline justify-between gap-3">
+        <h3 className="text-[15px] font-medium tracking-tight1">{title}</h3>
+        {count !== undefined && <span className="mono-label text-muted tabular">{count}</span>}
       </div>
-    );
-  }
+      {children}
+    </section>
+  );
+}
 
-  const { user, interviewCount, sessionCount, resumeCount } = details || {};
-  const initial = user?.name?.[0]?.toUpperCase() ?? 'A';
+function UserDrawer({ userId, onClose, onEdit, onDelete, canDelete, deletingId }) {
+  const { data, isLoading, isError, error, refetch } = useQuery({
+    queryKey: ['admin-user', userId],
+    queryFn: () => getAdminUser(userId),
+    enabled: !!userId,
+  });
+
+  const user = data?.user;
+  const resumes = user?.resumes ?? [];
+  const sessions = user?.sessions ?? [];
+  const deletable = !!user && canDelete && !isProtectedUser(user);
 
   return (
-    <div className="fixed inset-y-0 right-0 w-full sm:w-[480px] bg-[#0c0c1e] border-l border-white/10 p-6 z-40 shadow-2xl flex flex-col overflow-hidden animate-in slide-in-from-right duration-200">
-      
-      {/* Drawer Header */}
-      <div className="flex items-center justify-between pb-4 border-b border-white/10 flex-shrink-0">
-        <h3 className="text-white font-semibold text-base">User Activity & Profile</h3>
-        <button onClick={onClose} className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/5 transition-all">
-          <X size={18} />
-        </button>
-      </div>
-
-      {/* Drawer Content */}
-      <div className="flex-1 overflow-y-auto py-5 space-y-6 scrollbar-thin">
-        
-        {/* User Card */}
-        <div className="flex items-center gap-4 bg-white/[0.02] p-4 border border-white/[0.05] rounded-2xl">
-          <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-brand-600 to-brand-500 flex items-center justify-center text-white font-bold text-lg">
-            {initial}
+    <Drawer
+      open={!!userId}
+      onClose={onClose}
+      title={user?.name || 'Account details'}
+      subtitle={user?.email}
+      footer={
+        user && (
+          <>
+            <Button variant="ink" icon={Edit3} onClick={() => onEdit(user)}>
+              Edit account
+            </Button>
+            {deletable && (
+              <Button
+                variant="danger"
+                icon={Trash2}
+                loading={deletingId === user._id}
+                onClick={() => onDelete(user)}
+                className="order-first mr-auto"
+              >
+                Delete
+              </Button>
+            )}
+          </>
+        )
+      }
+    >
+      {isLoading ? (
+        <div className="space-y-4" role="status" aria-label="Loading account">
+          <Skeleton className="h-16 w-full rounded-r18" />
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-20 rounded-r18" />)}
           </div>
-          <div className="min-w-0">
-            <h4 className="text-white font-semibold text-sm truncate">{user?.name}</h4>
-            <p className="text-slate-500 text-xs truncate mb-1">{user?.email}</p>
-            <div className="flex gap-1.5 items-center flex-wrap">
-              <RoleBadge role={user?.role} />
-              <StatusBadge isActive={user?.isActive} isBanned={user?.isBanned} />
-              {user?.isPremium && (
-                <span className="badge bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-1">
-                  <Star size={10} className="fill-amber-300" /> Premium
-                </span>
-              )}
+          <Skeleton className="h-28 w-full rounded-r18" />
+          <Skeleton className="h-40 w-full rounded-r18" />
+        </div>
+      ) : isError ? (
+        <ErrorState
+          compact
+          title="Couldn’t load this account"
+          description={getErrorMessage(error, 'The account service did not respond.')}
+          onRetry={refetch}
+        />
+      ) : user ? (
+        <div className="space-y-7">
+          <div className="flex items-center gap-4 rounded-r18 border border-line-2 bg-white p-4">
+            <Avatar name={user.name} size={48} tone={user.role === 'candidate' ? 'lime' : 'ink'} />
+            <div className="flex min-w-0 flex-wrap gap-1.5">
+              <RolePill role={user.role} />
+              <StatusPill user={user} />
+              {user.isPremium && <Pill tone="lime" mono icon={Star}>Premium</Pill>}
+              {isProtectedUser(user) && <Pill tone="outline" mono icon={Lock}>Protected</Pill>}
             </div>
           </div>
-        </div>
 
-        {/* Stats Grid */}
-        <div className="grid grid-cols-3 gap-3">
-          <div className="p-3 bg-white/[0.01] border border-white/[0.05] rounded-xl text-center">
-            <p className="text-lg font-bold text-white">{user?.credits ?? 0}</p>
-            <p className="text-slate-500 text-[10px] uppercase font-semibold">Credits</p>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {[
+              ['Credits', user.credits ?? 0],
+              ['Interviews', data.interviewCount ?? 0],
+              ['Sessions', data.sessionCount ?? 0],
+              ['Resumes', data.resumeCount ?? 0],
+            ].map(([label, value]) => (
+              <div key={label} className="rounded-r18 border border-line-2 bg-white p-4">
+                <p className="mono-label text-muted">{label}</p>
+                <p className="mt-2 text-[24px] font-medium leading-none tracking-tight2 tabular">{value}</p>
+              </div>
+            ))}
           </div>
-          <div className="p-3 bg-white/[0.01] border border-white/[0.05] rounded-xl text-center">
-            <p className="text-lg font-bold text-white">{interviewCount ?? 0}</p>
-            <p className="text-slate-500 text-[10px] uppercase font-semibold">Interviews</p>
-          </div>
-          <div className="p-3 bg-white/[0.01] border border-white/[0.05] rounded-xl text-center">
-            <p className="text-lg font-bold text-white">{sessionCount ?? 0}</p>
-            <p className="text-slate-500 text-[10px] uppercase font-semibold">Sessions</p>
-          </div>
-        </div>
 
-        {/* Uploaded Resumes */}
-        <div>
-          <h5 className="text-white text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">Uploaded Resumes ({resumeCount ?? 0})</h5>
-          {user?.resumes?.length === 0 ? (
-            <p className="text-slate-600 text-xs">No resumes uploaded yet.</p>
-          ) : (
-            <div className="space-y-2">
-              {user?.resumes?.map(r => (
-                <div key={r._id} className="flex items-center justify-between p-2.5 rounded-xl bg-white/[0.02] border border-white/[0.04]">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <FileText size={14} className="text-orange-400" />
-                    <p className="text-xs text-slate-300 truncate max-w-[200px]">{r.originalName || r.fileName}</p>
-                  </div>
-                  {r.fileUrl && (
-                    <a href={`https://docs.google.com/viewer?url=${encodeURIComponent(r.fileUrl)}`} target="_blank" rel="noreferrer" className="text-xs text-blue-400 hover:underline flex items-center gap-1">
-                      View <ExternalLink size={10} />
-                    </a>
-                  )}
+          <DrawerSection title="Account">
+            <dl className="divide-y divide-line-2 rounded-r18 border border-line-2 bg-white text-[14px]">
+              {[
+                ['Joined', formatDate(user.createdAt)],
+                ['Last login', user.lastLogin ? `${formatDate(user.lastLogin)} · ${timeAgo(user.lastLogin)}` : 'Never'],
+                ['Account ID', <span key="id" className="break-all font-mono text-[12px]">{user._id}</span>],
+              ].map(([label, value]) => (
+                <div key={label} className="flex items-start justify-between gap-4 px-4 py-3">
+                  <dt className="text-muted">{label}</dt>
+                  <dd className="min-w-0 text-right">{value}</dd>
                 </div>
               ))}
-            </div>
-          )}
-        </div>
+            </dl>
+          </DrawerSection>
 
-        {/* Active Mock Sessions */}
-        <div>
-          <h5 className="text-white text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">Recent Sessions</h5>
-          {user?.sessions?.length === 0 ? (
-            <p className="text-slate-600 text-xs">No active interview session history.</p>
-          ) : (
-            <div className="space-y-2">
-              {user?.sessions?.map(s => (
-                <div key={s._id} className="p-3 rounded-xl bg-white/[0.02] border border-white/[0.04]">
-                  <div className="flex justify-between items-start">
-                    <div>
-                      <p className="text-xs font-semibold text-white">{s.interviewId?.jobTitle || 'Mock Interview'}</p>
-                      <p className="text-[10px] text-slate-500">{new Date(s.createdAt).toLocaleDateString()}</p>
-                    </div>
-                    {s.overallScore !== null && (
-                      <span className="text-xs font-bold text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded">
-                        {s.overallScore}%
+          <DrawerSection title="Uploaded resumes" count={data.resumeCount ?? resumes.length}>
+            {resumes.length === 0 ? (
+              <p className="rounded-r18 border border-dashed border-line bg-white/60 px-4 py-5 text-center text-[13.5px] text-muted">
+                No resumes uploaded yet.
+              </p>
+            ) : (
+              <ul className="space-y-2">
+                {resumes.map((r) => {
+                  const parse = PARSE_STATUS[r.parseStatus] || PARSE_STATUS.pending;
+                  return (
+                    <li key={r._id} className="flex items-center gap-3 rounded-r14 border border-line-2 bg-white px-3.5 py-3">
+                      <span className="grid h-9 w-9 flex-shrink-0 place-items-center rounded-r9 bg-stone-2">
+                        <FileText size={15} aria-hidden="true" />
                       </span>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-[14px] font-medium" title={r.originalName || r.fileName}>
+                          {r.originalName || r.fileName}
+                        </p>
+                        <p className="mt-0.5 font-mono text-[10.5px] uppercase tracking-mono text-muted">
+                          {formatBytes(r.fileSize)} · {formatDate(r.createdAt)}
+                        </p>
+                      </div>
+                      <div className="flex flex-shrink-0 flex-col items-end gap-1.5">
+                        <Pill tone={parse.tone} mono>{parse.label}</Pill>
+                        {r.fileUrl && (
+                          <a
+                            href={`https://docs.google.com/viewer?url=${encodeURIComponent(r.fileUrl)}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="link inline-flex items-center gap-1 text-[12.5px]"
+                          >
+                            View <ExternalLink size={11} aria-hidden="true" />
+                          </a>
+                        )}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </DrawerSection>
 
+          <DrawerSection title="Practice sessions" count={data.sessionCount ?? sessions.length}>
+            {sessions.length === 0 ? (
+              <p className="rounded-r18 border border-dashed border-line bg-white/60 px-4 py-5 text-center text-[13.5px] text-muted">
+                No interview sessions yet.
+              </p>
+            ) : (
+              <ul className="space-y-2">
+                {sessions.map((s) => {
+                  const st = SESSION_STATUS[s.status] || { tone: 'stone', label: s.status || 'Unknown' };
+                  return (
+                    <li key={s._id} className="flex items-center gap-3 rounded-r14 border border-line-2 bg-white px-3.5 py-3">
+                      <span className="grid h-9 w-9 flex-shrink-0 place-items-center rounded-r9 bg-brand-50 text-brand-600">
+                        <MessageSquare size={15} aria-hidden="true" />
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-[14px] font-medium">{s.interviewId?.jobTitle || 'Mock interview'}</p>
+                        <p className="mt-0.5 truncate font-mono text-[10.5px] uppercase tracking-mono text-muted">
+                          {[s.interviewId?.company, formatDate(s.createdAt)].filter(Boolean).join(' · ')}
+                        </p>
+                      </div>
+                      <div className="flex flex-shrink-0 flex-col items-end gap-1.5">
+                        <Pill tone={st.tone} mono>{st.label}</Pill>
+                        {s.overallScore !== null && s.overallScore !== undefined && <ScorePill score={s.overallScore} />}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </DrawerSection>
+        </div>
+      ) : null}
+    </Drawer>
+  );
+}
+
+// ─── Edit modal ────────────────────────────────────────────────────
+function ToggleRow({ label, hint, checked, onChange, disabled }) {
+  return (
+    <div className={cn('flex items-center justify-between gap-4 rounded-r14 border border-line-2 bg-white px-4 py-3', disabled && 'bg-stone-2')}>
+      <div className="min-w-0">
+        <p className="text-[14px] font-medium">{label}</p>
+        {hint && <p className="mt-0.5 text-[12.5px] leading-snug text-muted">{hint}</p>}
       </div>
+      <Switch checked={checked} onChange={onChange} disabled={disabled} label={label} />
     </div>
   );
 }
 
-// ─── Edit Modal Component ─────────────────────────────────────────
-function EditUserModal({ user, onSave, onClose }) {
-  const [form, setForm] = useState({
-    name: user.name,
-    role: user.role,
-    isActive: user.isActive,
-    isBanned: user.isBanned,
-    isPremium: user.isPremium,
-    credits: user.credits ?? 10
-  });
+function EditUserModal({ user, canAssignRoles, onClose, onSaved }) {
+  const locked = isProtectedUser(user);
+  const [form, setForm] = useState(() => ({
+    name: user.name ?? '',
+    role: user.role ?? 'candidate',
+    isActive: !!user.isActive,
+    isBanned: !!user.isBanned,
+    isPremium: !!user.isPremium,
+    credits: String(user.credits ?? 10),
+  }));
+  const [errors, setErrors] = useState({});
+  const [serverError, setServerError] = useState('');
   const [saving, setSaving] = useState(false);
+  const set = (patch) => setForm((p) => ({ ...p, ...patch }));
+  const credits = Number.parseInt(form.credits, 10);
+
+  const validate = () => {
+    const next = {};
+    const name = form.name.trim();
+    if (name.length < 2) next.name = 'Name must be at least 2 characters.';
+    else if (name.length > 50) next.name = 'Name cannot exceed 50 characters.';
+    if (!/^\d+$/.test(String(form.credits).trim())) next.credits = 'Enter a whole number of 0 or more.';
+    return next;
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    const found = validate();
+    setErrors(found);
+    if (Object.keys(found).length) return;
+
+    const payload = {
+      name: form.name.trim(),
+      isActive: form.isActive,
+      isBanned: form.isBanned,
+      isPremium: form.isPremium,
+      credits,
+    };
+    // The API rejects any `role` field from non-super admins, so only send it when it changed.
+    if (form.role !== user.role) payload.role = form.role;
+
     setSaving(true);
+    setServerError('');
     try {
-      await onSave(user._id, form);
+      await updateAdminUser(user._id, payload);
+      toast.success('Account changes saved.');
+      onSaved?.();
       onClose();
+    } catch (err) {
+      const msg = getErrorMessage(err, 'Couldn’t save these changes.');
+      setServerError(msg);
+      toast.error(msg);
     } finally {
       setSaving(false);
     }
   };
 
+  const creditsId = 'admin-edit-user-credits';
+
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-      <form onSubmit={handleSubmit} className="bg-[#14142a] border border-white/10 rounded-2xl p-6 w-full max-w-md shadow-2xl space-y-4">
-        <h3 className="text-white font-semibold text-lg border-b border-white/10 pb-2">Edit User Profile</h3>
-        
-        {/* Name */}
-        <div>
-          <label className="form-label">Full Name</label>
-          <input
-            className="form-input"
+    <Modal
+      open
+      onClose={saving ? () => {} : onClose}
+      title="Edit account"
+      description={user.email}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose} disabled={saving}>Cancel</Button>
+          <Button type="submit" form="admin-edit-user" variant="ink" loading={saving}>Save changes</Button>
+        </>
+      }
+    >
+      <form id="admin-edit-user" onSubmit={handleSubmit} noValidate className="space-y-5">
+        {serverError && <Alert tone="error" title="Changes not saved">{serverError}</Alert>}
+        {locked && (
+          <Alert tone="info" icon={Lock}>
+            This is the protected super admin account. Role, active and ban status can’t be changed here.
+          </Alert>
+        )}
+
+        <Field label="Full name" required error={errors.name}>
+          <Input
             value={form.name}
-            onChange={(e) => setForm(p => ({ ...p, name: e.target.value }))}
-            required
+            onChange={(e) => set({ name: e.target.value })}
+            maxLength={50}
+            autoComplete="off"
+            data-autofocus
+          />
+        </Field>
+
+        <Field
+          label="Role"
+          hint={locked ? undefined : !canAssignRoles ? 'Only a super admin can change roles.' : 'Staff roles grant access to this admin console.'}
+        >
+          <Select value={form.role} onChange={(e) => set({ role: e.target.value })} disabled={locked || !canAssignRoles}>
+            {ROLE_OPTIONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
+          </Select>
+        </Field>
+
+        <div className="field-label">
+          <label htmlFor={creditsId}>Credits</label>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="soft"
+              iconOnly
+              icon={Minus}
+              aria-label="Remove one credit"
+              onClick={() => set({ credits: String(Math.max(0, (Number.isNaN(credits) ? 0 : credits) - 1)) })}
+            />
+            <Input
+              id={creditsId}
+              type="number"
+              min={0}
+              step={1}
+              inputMode="numeric"
+              value={form.credits}
+              onChange={(e) => set({ credits: e.target.value })}
+              invalid={!!errors.credits}
+              aria-invalid={errors.credits ? true : undefined}
+              aria-describedby={`${creditsId}-msg`}
+              className="text-center tabular"
+            />
+            <Button
+              variant="soft"
+              iconOnly
+              icon={Plus}
+              aria-label="Add one credit"
+              onClick={() => set({ credits: String((Number.isNaN(credits) ? 0 : credits) + 1) })}
+            />
+          </div>
+          {errors.credits ? (
+            <span id={`${creditsId}-msg`} role="alert" className="field-error-text">{errors.credits}</span>
+          ) : (
+            <span id={`${creditsId}-msg`} className="field-hint">Interview credits available to this account.</span>
+          )}
+        </div>
+
+        <div className="space-y-2">
+          <ToggleRow
+            label="Account active"
+            hint="Inactive accounts can’t sign in."
+            checked={form.isActive}
+            onChange={(v) => set({ isActive: v })}
+            disabled={locked}
+          />
+          <ToggleRow
+            label="Premium membership"
+            hint="Grants the paid pass without a payment."
+            checked={form.isPremium}
+            onChange={(v) => set({ isPremium: v })}
+          />
+          <ToggleRow
+            label="Banned"
+            hint="Blocks access entirely. Banning also deactivates the account."
+            checked={form.isBanned}
+            onChange={(v) => setForm((p) => ({ ...p, isBanned: v, isActive: v ? false : p.isActive }))}
+            disabled={locked}
           />
         </div>
-
-        {/* Role */}
-        <div>
-          <label className="form-label">User Authorization Role</label>
-          <select
-            className="form-select"
-            value={form.role}
-            onChange={(e) => setForm(p => ({ ...p, role: e.target.value }))}
-            disabled={user.email === ADMIN_EMAIL}
-          >
-            <option value="candidate">Candidate</option>
-            <option value="support">Support</option>
-            <option value="content_manager">Content Manager</option>
-            <option value="admin">Admin</option>
-            <option value="super_admin">Super Admin</option>
-          </select>
-        </div>
-
-        {/* Credits Control */}
-        <div>
-          <label className="form-label">Credits Count</label>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setForm(p => ({ ...p, credits: Math.max(0, p.credits - 1) }))}
-              className="p-2.5 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300"
-            >
-              <Minus size={14} />
-            </button>
-            <input
-              type="number"
-              className="form-input text-center"
-              value={form.credits}
-              onChange={(e) => setForm(p => ({ ...p, credits: parseInt(e.target.value) || 0 }))}
-              min="0"
-            />
-            <button
-              type="button"
-              onClick={() => setForm(p => ({ ...p, credits: p.credits + 1 }))}
-              className="p-2.5 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300"
-            >
-              <Plus size={14} />
-            </button>
-          </div>
-        </div>
-
-        {/* Status flags */}
-        <div className="grid grid-cols-2 gap-4 pt-2">
-          {/* Active status */}
-          <label className="flex items-center gap-2.5 cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={form.isActive}
-              onChange={(e) => setForm(p => ({ ...p, isActive: e.target.checked }))}
-              disabled={user.email === ADMIN_EMAIL}
-              className="w-4 h-4 bg-surface-card border-slate-600 rounded text-brand-600 focus:ring-brand-500"
-            />
-            <span className="text-slate-300 text-xs font-semibold">Account Active</span>
-          </label>
-
-          {/* Premium flag */}
-          <label className="flex items-center gap-2.5 cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={form.isPremium}
-              onChange={(e) => setForm(p => ({ ...p, isPremium: e.target.checked }))}
-              className="w-4 h-4 bg-surface-card border-slate-600 rounded text-brand-600 focus:ring-brand-500"
-            />
-            <span className="text-slate-300 text-xs font-semibold">Premium Membership</span>
-          </label>
-
-          {/* Banned flag */}
-          <label className="flex items-center gap-2.5 cursor-pointer select-none col-span-2">
-            <input
-              type="checkbox"
-              checked={form.isBanned}
-              onChange={(e) => setForm(p => ({ ...p, isBanned: e.target.checked, isActive: e.target.checked ? false : p.isActive }))}
-              disabled={user.email === ADMIN_EMAIL}
-              className="w-4 h-4 bg-surface-card border-slate-600 rounded text-brand-600 focus:ring-brand-500"
-            />
-            <span className="text-slate-300 text-xs font-semibold">Banned / Terminated Status</span>
-          </label>
-        </div>
-
-        {/* Buttons */}
-        <div className="flex gap-3 pt-3 border-t border-white/10">
-          <button type="submit" className="btn-primary flex-1" disabled={saving}>
-            {saving ? 'Saving…' : 'Apply Changes'}
-          </button>
-          <button type="button" className="btn-secondary flex-1" onClick={onClose}>Cancel</button>
-        </div>
       </form>
-    </div>
+    </Modal>
   );
 }
 
-// ─── Main User Manager ────────────────────────────────────────────
+// ─── Page ──────────────────────────────────────────────────────────
 export default function AdminUsersPage() {
-  const [data, setData]               = useState({ users: [], total: 0, pages: 1 });
-  const [loading, setLoading]         = useState(true);
-  const [page, setPage]               = useState(1);
-  const [search, setSearch]           = useState('');
-  const [role, setRole]               = useState('all');
-  const [status, setStatus]           = useState('all');
-  const [sortBy, setSortBy]           = useState('createdAt');
-  const [sortDir, setSortDir]         = useState('desc');
-  const [selectedUserIds, setSelectedUserIds] = useState([]);
-  
-  // Modals / Drawer toggles
-  const [activeDrawerUserId, setActiveDrawerUserId] = useState(null);
-  const [editUser, setEditUser]       = useState(null);
-  const [deleteUserObj, setDeleteUserObj] = useState(null);
-  const [showBulkDropdown, setShowBulkDropdown] = useState(false);
+  const confirm = useConfirm();
+  const queryClient = useQueryClient();
+  const { admin, isSuperAdmin } = useAdminAuth();
+  const selfId = String(admin?._id ?? admin?.id ?? '');
 
-  const dropdownRef = useRef(null);
+  const [page, setPage] = useState(1);
+  const [search, setSearch] = useState('');
+  const [role, setRole] = useState('all');
+  const [status, setStatus] = useState('all');
+  const [sortBy, setSortBy] = useState('createdAt');
+  const [sortDir, setSortDir] = useState('desc');
+  const [selected, setSelected] = useState([]);
+  const [drawerUserId, setDrawerUserId] = useState(null);
+  const [editUser, setEditUser] = useState(null);
+  const [deletingId, setDeletingId] = useState(null);
+  const [bulkBusy, setBulkBusy] = useState(null);
 
-  const fetchUsers = useCallback(async () => {
-    setLoading(true);
-    try {
-      const d = await getAdminUsers({
-        page, limit: 12, search, role, status, sortBy, sortDir
-      });
-      setData(d);
-    } catch {
-      toast.error('Failed to load accounts list.');
-    } finally {
-      setLoading(false);
-    }
-  }, [page, search, role, status, sortBy, sortDir]);
+  const debouncedSearch = useDebounced(search.trim(), 300);
+  const params = { page, limit: PAGE_SIZE, search: debouncedSearch, role, status, sortBy, sortDir };
 
+  const { data, isLoading, isFetching, isPlaceholderData, isError, error, refetch } = useQuery({
+    queryKey: ['admin-users', params],
+    queryFn: () => getAdminUsers(params),
+    placeholderData: keepPreviousData,
+  });
+
+  const users = data?.users ?? [];
+  const total = data?.total ?? 0;
+  const totalPages = data?.pages ?? 0;
+
+  // Selection is per result page — clear it whenever the result set changes.
+  useEffect(() => { setSelected([]); }, [page, debouncedSearch, role, status, sortBy, sortDir]);
+
+  // After deletions the current page can fall past the end.
   useEffect(() => {
-    fetchUsers();
-  }, [fetchUsers]);
+    if (data && data.pages > 0 && page > data.pages) setPage(data.pages);
+  }, [data, page]);
 
-  // Handle outside dropdown close
+  // Bulk actions only ever apply to candidate accounts (enforced server-side), never to yourself.
+  const isSelectable = (u) => u.role === 'candidate' && u.email !== ADMIN_EMAIL && String(u._id) !== selfId;
+  const selectable = users.filter(isSelectable);
+  const allSelected = selectable.length > 0 && selectable.every((u) => selected.includes(u._id));
+  const someSelected = selected.length > 0 && !allSelected;
+
+  const selectAllRef = useRef(null);
   useEffect(() => {
-    const clickHandler = (e) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target)) {
-        setShowBulkDropdown(false);
-      }
-    };
-    document.addEventListener('mousedown', clickHandler);
-    return () => document.removeEventListener('mousedown', clickHandler);
-  }, []);
+    if (selectAllRef.current) selectAllRef.current.indeterminate = someSelected;
+  }, [someSelected]);
 
-  const handleUpdate = async (id, payload) => {
-    try {
-      await updateAdminUser(id, payload);
-      toast.success('Account modifications saved.');
-      fetchUsers();
-    } catch {
-      toast.error('Error saving edits.');
-    }
+  const refreshUsers = () => {
+    queryClient.invalidateQueries({ queryKey: ['admin-users'] });
+    queryClient.invalidateQueries({ queryKey: ['admin-user'] });
   };
 
-  const handleDelete = async (id) => {
-    try {
-      await deleteAdminUser(id);
-      toast.success('Account permanently deleted.');
-      setDeleteUserObj(null);
-      fetchUsers();
-    } catch {
-      toast.error('Deletion failure.');
-    }
-  };
+  const resetPage = () => setPage(1);
 
-  // Bulk operation triggers
-  const handleBulkAction = async (action) => {
-    if (selectedUserIds.length === 0) return;
-    try {
-      await bulkAdminUsersAction(action, selectedUserIds);
-      toast.success(`Bulk operation: ${action} succeeded.`);
-      setSelectedUserIds([]);
-      setShowBulkDropdown(false);
-      fetchUsers();
-    } catch (err) {
-      toast.error(err.response?.data?.message || 'Bulk operation failed.');
-    }
-  };
-
-  // Checkbox handlers
-  const handleSelectAll = (e) => {
-    if (e.target.checked) {
-      const list = data.users.filter(u => u.email !== ADMIN_EMAIL).map(u => u._id);
-      setSelectedUserIds(list);
-    } else {
-      setSelectedUserIds([]);
-    }
-  };
-
-  const handleSelectRow = (userId) => {
-    setSelectedUserIds(p =>
-      p.includes(userId) ? p.filter(id => id !== userId) : [...p, userId]
-    );
-  };
-
-  // Toggle sorting directions
   const handleSort = (field) => {
     if (sortBy === field) {
-      setSortDir(p => p === 'desc' ? 'asc' : 'desc');
+      setSortDir((d) => (d === 'desc' ? 'asc' : 'desc'));
     } else {
       setSortBy(field);
       setSortDir('desc');
     }
-    setPage(1);
+    resetPage();
   };
 
-  // Export search queue as CSV file
+  const toggleRow = (id) => setSelected((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
+  const toggleAll = (checked) => setSelected(checked ? selectable.map((u) => u._id) : []);
+
+  const handleDelete = async (u) => {
+    const ok = await confirm({
+      title: 'Delete this account?',
+      description: `${u.name} (${u.email}) will be permanently deleted along with their interviews, practice sessions and uploaded resumes. This can’t be undone.`,
+      confirmLabel: 'Delete account',
+      tone: 'danger',
+    });
+    if (!ok) return;
+    setDeletingId(u._id);
+    try {
+      await deleteAdminUser(u._id);
+      toast.success('Account permanently deleted.');
+      if (drawerUserId === u._id) setDrawerUserId(null);
+      setSelected((p) => p.filter((id) => id !== u._id));
+      refreshUsers();
+    } catch (err) {
+      toast.error(getErrorMessage(err, 'Couldn’t delete this account.'));
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  const BULK_CONFIRM = {
+    deactivate: {
+      title: 'Deactivate selected accounts?',
+      description: 'They won’t be able to sign in until reactivated.',
+      confirmLabel: 'Deactivate',
+      tone: 'danger',
+    },
+    ban: {
+      title: 'Ban selected accounts?',
+      description: 'Banned candidates are blocked from Rehearsly until unbanned.',
+      confirmLabel: 'Ban accounts',
+      tone: 'danger',
+    },
+    delete: {
+      title: 'Delete selected accounts?',
+      description: 'Their interviews, practice sessions and uploaded resumes will be permanently deleted. This can’t be undone.',
+      confirmLabel: 'Delete accounts',
+      tone: 'danger',
+    },
+  };
+
+  const runBulk = async (action) => {
+    if (selected.length === 0) return;
+    const n = selected.length;
+    const opts = BULK_CONFIRM[action];
+    if (opts && !(await confirm({ ...opts, title: opts.title.replace('selected accounts', `${n} ${n === 1 ? 'account' : 'accounts'}`) }))) return;
+    setBulkBusy(action);
+    try {
+      const res = await bulkAdminUsersAction(action, selected);
+      toast.success(res?.message || `Bulk ${action} completed.`);
+      setSelected([]);
+      refreshUsers();
+    } catch (err) {
+      toast.error(getErrorMessage(err, 'Bulk operation failed.'));
+    } finally {
+      setBulkBusy(null);
+    }
+  };
+
+  // Export the accounts on the current page as CSV.
   const exportToCSV = () => {
-    if (data.users.length === 0) {
-      toast.error("No data available to export.");
+    if (users.length === 0) {
+      toast.error('No data available to export.');
       return;
     }
     const headers = ['ID', 'Name', 'Email', 'Role', 'Status', 'Premium', 'Credits', 'Sessions', 'Last Login'];
-    const rows = data.users.map(u => [
+    const rows = users.map((u) => [
       u._id,
       u.name,
       u.email,
       u.role,
-      u.isBanned ? 'Banned' : (u.isActive ? 'Active' : 'Inactive'),
+      u.isBanned ? 'Banned' : u.isActive ? 'Active' : 'Inactive',
       u.isPremium ? 'Yes' : 'No',
       u.credits ?? 10,
       u.totalSessions ?? 0,
-      u.lastLogin ? new Date(u.lastLogin).toLocaleDateString() : 'Never'
+      u.lastLogin ? new Date(u.lastLogin).toLocaleDateString() : 'Never',
     ]);
-    const csvContent = "data:text/csv;charset=utf-8," 
-      + [headers.join(','), ...rows.map(e => e.map(val => `"${val}"`).join(","))].join("\n");
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement("a");
-    link.setAttribute("href", encodedUri);
-    link.setAttribute("download", `candidates_export_${new Date().toISOString().slice(0,10)}.csv`);
+    const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const csv = [headers, ...rows].map((r) => r.map(esc).join(',')).join('\n');
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `candidates_export_${new Date().toISOString().slice(0, 10)}.csv`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
+  const filtersActive = !!debouncedSearch || role !== 'all' || status !== 'all';
+  const clearFilters = () => {
+    setSearch('');
+    setRole('all');
+    setStatus('all');
+    resetPage();
+  };
+
+  const from = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
+  const to = Math.min(page * PAGE_SIZE, total);
+  const COLS = 9;
+
   return (
-    <div className="space-y-5 max-w-[1600px] mx-auto pb-6 relative">
+    <div className="space-y-8">
+      <PageHeader
+        eyebrow="Admin · Users"
+        title="User management"
+        description="Search accounts, adjust roles, credits and access, and review each candidate’s practice history."
+        actions={
+          <>
+            <Button variant="soft" icon={RefreshCw} onClick={() => refetch()} loading={isFetching && !isLoading}>
+              Refresh
+            </Button>
+            <Button variant="ink" icon={Download} onClick={exportToCSV} title="Exports the accounts on this page">
+              Export CSV
+            </Button>
+          </>
+        }
+      />
 
-      {/* Slide-out Profile Drawer overlay wrapper */}
-      {activeDrawerUserId && (
-        <>
-          <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-30" onClick={() => setActiveDrawerUserId(null)} />
-          <UserProfileDrawer userId={activeDrawerUserId} onClose={() => setActiveDrawerUserId(null)} onUpdateSuccess={fetchUsers} />
-        </>
-      )}
-
-      {/* ── Header ───────────────────────────────────────────── */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-white tracking-tight">User Management</h1>
-          <p className="text-slate-400 text-sm mt-0.5">Manage user authorization roles, ban lists, credit counts, and activity metrics</p>
-        </div>
-        
-        {/* Export CSV button */}
-        <button
-          onClick={exportToCSV}
-          className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-white/5 border border-white/8 text-slate-300 text-sm hover:bg-white/10 hover:border-white/15 transition-all font-medium self-start sm:self-auto"
-        >
-          <Download size={14} />
-          Export CSV
-        </button>
-      </div>
-
-      {/* ── Search, Filters, & Bulk Actions Dropdown ─────────── */}
-      <div className="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center">
-        {/* Search */}
-        <div className="relative flex-1">
-          <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
-          <input
-            className="form-input pl-10"
-            placeholder="Search by name or email address…"
-            value={search}
-            onChange={(e) => { setSearch(e.target.value); setPage(1); }}
-          />
-        </div>
-        
-        {/* Filters */}
-        <select className="form-select w-full sm:w-40" value={role} onChange={(e) => { setRole(e.target.value); setPage(1); }}>
-          <option value="all">All Roles</option>
-          <option value="candidate">Candidate</option>
-          <option value="support">Support</option>
-          <option value="content_manager">Content Manager</option>
-          <option value="admin">Admin</option>
-          <option value="super_admin">Super Admin</option>
-        </select>
-        
-        <select className="form-select w-full sm:w-40" value={status} onChange={(e) => { setStatus(e.target.value); setPage(1); }}>
-          <option value="all">All Status</option>
-          <option value="active">Active</option>
-          <option value="inactive">Inactive</option>
-          <option value="banned">Banned</option>
-          <option value="premium">Premium</option>
-        </select>
-
-        {/* Bulk Actions Dropdown */}
-        {selectedUserIds.length > 0 && (
-          <div className="relative flex-shrink-0" ref={dropdownRef}>
-            <button
-              onClick={() => setShowBulkDropdown(!showBulkDropdown)}
-              className="flex items-center justify-between gap-2 px-4 py-2.5 rounded-xl bg-brand-600 text-white text-sm hover:bg-brand-500 transition-colors w-full sm:w-auto"
+      <div className="space-y-5">
+        {/* Toolbar */}
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="min-w-0 flex-1 basis-[260px]">
+              <Input
+                icon={Search}
+                type="search"
+                value={search}
+                onChange={(e) => { setSearch(e.target.value); resetPage(); }}
+                placeholder="Search by name or email"
+                aria-label="Search users by name or email"
+              />
+            </div>
+            <Select
+              aria-label="Filter by role"
+              value={role}
+              onChange={(e) => { setRole(e.target.value); resetPage(); }}
+              className="sm:w-52"
             >
-              Bulk Action ({selectedUserIds.length})
-              <MoreHorizontal size={14} />
-            </button>
+              <option value="all">All roles</option>
+              {ROLE_OPTIONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
+            </Select>
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <Segmented
+              options={STATUS_OPTIONS}
+              value={status}
+              onChange={(v) => { setStatus(v); resetPage(); }}
+              ariaLabel="Filter by account status"
+            />
+            <span className="mono-label text-muted tabular" aria-live="polite">
+              {isLoading ? 'Loading…' : `${total} ${total === 1 ? 'account' : 'accounts'}`}
+            </span>
+          </div>
+        </div>
 
-            {showBulkDropdown && (
-              <div className="absolute right-0 top-full mt-1.5 w-48 bg-[#12122a] border border-white/10 rounded-xl shadow-xl z-20 p-1 divide-y divide-white/5">
-                <div className="py-1">
-                  <button onClick={() => handleBulkAction('activate')} className="w-full text-left px-3 py-2 text-xs font-semibold text-slate-300 hover:text-white hover:bg-white/5 rounded-lg flex items-center gap-2">
-                    <UserCheck size={12} className="text-emerald-400" /> Activate Users
-                  </button>
-                  <button onClick={() => handleBulkAction('deactivate')} className="w-full text-left px-3 py-2 text-xs font-semibold text-slate-300 hover:text-white hover:bg-white/5 rounded-lg flex items-center gap-2">
-                    <UserX size={12} className="text-amber-400" /> Deactivate Users
-                  </button>
+        {/* Bulk action bar */}
+        {selected.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2 rounded-r18 bg-ink px-4 py-3 text-white">
+            <span className="mono-label text-on-dark-bright tabular">{selected.length} selected</span>
+            <Button variant="ghost" size="sm" className="text-on-dark hover:bg-ink-3 hover:text-white" onClick={() => setSelected([])}>
+              Clear
+            </Button>
+            <Dropdown
+              className="ml-auto"
+              trigger={({ open, toggle }) => (
+                <Button
+                  variant="lime"
+                  size="sm"
+                  iconRight={ChevronDown}
+                  onClick={toggle}
+                  loading={!!bulkBusy}
+                  aria-haspopup="menu"
+                  aria-expanded={open}
+                >
+                  Bulk actions
+                </Button>
+              )}
+            >
+              {({ close }) => (
+                <div className="py-1.5">
+                  <MenuItem icon={UserCheck} onClick={() => { close(); runBulk('activate'); }}>Activate accounts</MenuItem>
+                  <MenuItem icon={UserX} onClick={() => { close(); runBulk('deactivate'); }}>Deactivate accounts</MenuItem>
+                  <div className="my-1.5 border-t border-line-2" />
+                  <MenuItem icon={Ban} tone="danger" onClick={() => { close(); runBulk('ban'); }}>Ban accounts</MenuItem>
+                  <MenuItem icon={ShieldCheck} onClick={() => { close(); runBulk('unban'); }}>Unban accounts</MenuItem>
+                  <div className="my-1.5 border-t border-line-2" />
+                  <MenuItem icon={Trash2} tone="danger" disabled={!isSuperAdmin} onClick={() => { close(); runBulk('delete'); }}>
+                    {isSuperAdmin ? 'Delete accounts' : 'Delete (super admin only)'}
+                  </MenuItem>
                 </div>
-                <div className="py-1">
-                  <button onClick={() => handleBulkAction('ban')} className="w-full text-left px-3 py-2 text-xs font-semibold text-slate-300 hover:text-white hover:bg-white/5 rounded-lg flex items-center gap-2">
-                    <Ban size={12} className="text-red-400" /> Ban Users
-                  </button>
-                  <button onClick={() => handleBulkAction('unban')} className="w-full text-left px-3 py-2 text-xs font-semibold text-slate-300 hover:text-white hover:bg-white/5 rounded-lg flex items-center gap-2">
-                    <UserCheck size={12} className="text-blue-400" /> Unban Users
-                  </button>
-                </div>
-                <div className="py-1 pt-1">
-                  <button onClick={() => handleBulkAction('delete')} className="w-full text-left px-3 py-2 text-xs font-semibold text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded-lg flex items-center gap-2">
-                    <Trash2 size={12} /> Delete Users
-                  </button>
-                </div>
+              )}
+            </Dropdown>
+          </div>
+        )}
+
+        {/* Table */}
+        {isError ? (
+          <ErrorState
+            title="Couldn’t load accounts"
+            description={getErrorMessage(error, 'The accounts service did not respond.')}
+            onRetry={refetch}
+          />
+        ) : !isLoading && users.length === 0 ? (
+          <EmptyState
+            icon={Users}
+            title={filtersActive ? 'No accounts match these filters' : 'No accounts yet'}
+            description={
+              filtersActive
+                ? 'Try a different name or email, or clear the role and status filters.'
+                : 'Accounts appear here as soon as candidates sign up.'
+            }
+            action={filtersActive && <Button variant="soft" onClick={clearFilters}>Clear filters</Button>}
+          />
+        ) : (
+          <>
+            <TableShell minWidth={980} className={cn(isFetching && isPlaceholderData && 'opacity-60 transition-opacity')}>
+              <thead>
+                <tr>
+                  <th className="w-12">
+                    <Checkbox
+                      ref={selectAllRef}
+                      checked={allSelected}
+                      onChange={(e) => toggleAll(e.target.checked)}
+                      disabled={selectable.length === 0}
+                      aria-label="Select all candidate accounts on this page"
+                    />
+                  </th>
+                  <SortHeader field="name" label="User" sortBy={sortBy} sortDir={sortDir} onSort={handleSort} />
+                  <th>Role</th>
+                  <th>Status</th>
+                  <th>Credits</th>
+                  <th>Sessions</th>
+                  <SortHeader field="createdAt" label="Joined" sortBy={sortBy} sortDir={sortDir} onSort={handleSort} />
+                  <SortHeader field="lastLogin" label="Last login" sortBy={sortBy} sortDir={sortDir} onSort={handleSort} />
+                  <th className="text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {isLoading
+                  ? Array.from({ length: 6 }).map((_, i) => (
+                    <tr key={i}>
+                      <td><Skeleton className="h-[18px] w-[18px] rounded-[5px]" /></td>
+                      <td>
+                        <div className="flex items-center gap-3">
+                          <Skeleton className="h-[34px] w-[34px] flex-shrink-0 rounded-full" />
+                          <div className="space-y-1.5">
+                            <Skeleton className="h-3.5 w-32" />
+                            <Skeleton className="h-3 w-44" />
+                          </div>
+                        </div>
+                      </td>
+                      {Array.from({ length: COLS - 3 }).map((__, j) => (
+                        <td key={j}><Skeleton className="h-4 w-16" /></td>
+                      ))}
+                      <td><Skeleton className="ml-auto h-8 w-24 rounded-full" /></td>
+                    </tr>
+                  ))
+                  : users.map((u) => {
+                    const protectedUser = isProtectedUser(u);
+                    const selectableRow = isSelectable(u);
+                    const checked = selected.includes(u._id);
+                    return (
+                      <tr key={u._id} className={cn(checked && 'bg-brand-50/70')}>
+                        <td>
+                          <span title={selectableRow ? undefined : 'Bulk actions apply to candidate accounts only'}>
+                            <Checkbox
+                              checked={checked}
+                              onChange={() => toggleRow(u._id)}
+                              disabled={!selectableRow}
+                              aria-label={`Select ${u.name}`}
+                              className={cn(!selectableRow && 'cursor-not-allowed opacity-40')}
+                            />
+                          </span>
+                        </td>
+                        <td>
+                          <button
+                            type="button"
+                            onClick={() => setDrawerUserId(u._id)}
+                            className="group flex min-w-0 items-center gap-3 text-left"
+                          >
+                            <Avatar name={u.name} size={34} tone={u.role === 'candidate' ? 'lime' : 'ink'} />
+                            <span className="min-w-0">
+                              <span className="flex items-center gap-1.5 font-medium transition-colors group-hover:text-brand-600">
+                                <span className="max-w-[220px] truncate">{u.name}</span>
+                                {u.isPremium && (
+                                  <>
+                                    <Star size={12} className="flex-shrink-0 fill-lime text-lime-ok" aria-hidden="true" />
+                                    <span className="sr-only">Premium</span>
+                                  </>
+                                )}
+                              </span>
+                              <span className="block max-w-[240px] truncate text-[12.5px] text-muted">{u.email}</span>
+                            </span>
+                          </button>
+                        </td>
+                        <td><RolePill role={u.role} /></td>
+                        <td><StatusPill user={u} /></td>
+                        <td className="tabular">{u.credits ?? 10}</td>
+                        <td className="tabular">{u.totalSessions ?? 0}</td>
+                        <td className="whitespace-nowrap text-[13px] text-muted">{formatDate(u.createdAt)}</td>
+                        <td className="whitespace-nowrap text-[13px] text-muted" title={u.lastLogin ? formatDate(u.lastLogin) : undefined}>
+                          {u.lastLogin ? timeAgo(u.lastLogin) : 'Never'}
+                        </td>
+                        <td>
+                          <div className="flex items-center justify-end gap-1">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              iconOnly
+                              icon={Eye}
+                              title="View profile & activity"
+                              aria-label={`View ${u.name}`}
+                              onClick={() => setDrawerUserId(u._id)}
+                            />
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              iconOnly
+                              icon={Edit3}
+                              title="Edit account"
+                              aria-label={`Edit ${u.name}`}
+                              onClick={() => setEditUser(u)}
+                            />
+                            {isSuperAdmin && !protectedUser && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                iconOnly
+                                icon={Trash2}
+                                title="Delete account"
+                                aria-label={`Delete ${u.name}`}
+                                loading={deletingId === u._id}
+                                className="hover:bg-coral-soft hover:text-coral"
+                                onClick={() => handleDelete(u)}
+                              />
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+              </tbody>
+            </TableShell>
+
+            {!isLoading && totalPages > 1 && (
+              <div className="flex flex-col items-center justify-between gap-3 sm:flex-row">
+                <p className="mono-label text-muted tabular">Showing {from}–{to} of {total}</p>
+                <Pagination page={page} totalPages={totalPages} onPageChange={setPage} disabled={isFetching} />
               </div>
             )}
-          </div>
+          </>
         )}
       </div>
 
-      {/* ── Accounts Table ───────────────────────────────────── */}
-      <div className="card overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-white/8 bg-white/3">
-                {/* Select All Checkbox */}
-                <th className="px-4 py-3 w-10 text-center">
-                  <input
-                    type="checkbox"
-                    checked={data.users.length > 0 && selectedUserIds.length === data.users.filter(u => u.email !== ADMIN_EMAIL).length}
-                    onChange={handleSelectAll}
-                    disabled={data.users.length === 0}
-                    className="w-4 h-4 bg-surface-card border-slate-600 rounded text-brand-600 focus:ring-brand-500"
-                  />
-                </th>
-                <th className="text-left text-slate-400 font-medium px-4 py-3 cursor-pointer select-none hover:text-white" onClick={() => handleSort('name')}>
-                  <span className="flex items-center gap-1.5">User <ArrowUpDown size={12} /></span>
-                </th>
-                <th className="text-left text-slate-400 font-medium px-4 py-3">Role</th>
-                <th className="text-left text-slate-400 font-medium px-4 py-3">Status</th>
-                <th className="text-left text-slate-400 font-medium px-4 py-3 cursor-pointer select-none hover:text-white" onClick={() => handleSort('credits')}>
-                  <span className="flex items-center gap-1.5">Credits <ArrowUpDown size={12} /></span>
-                </th>
-                <th className="text-left text-slate-400 font-medium px-4 py-3 cursor-pointer select-none hover:text-white" onClick={() => handleSort('totalSessions')}>
-                  <span className="flex items-center gap-1.5">Sessions <ArrowUpDown size={12} /></span>
-                </th>
-                <th className="text-left text-slate-400 font-medium px-4 py-3 cursor-pointer select-none hover:text-white" onClick={() => handleSort('lastLogin')}>
-                  <span className="flex items-center gap-1.5">Last Login <ArrowUpDown size={12} /></span>
-                </th>
-                <th className="text-right text-slate-400 font-medium px-4 py-3">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-white/5">
-              {loading ? (
-                Array.from({ length: 8 }).map((_, i) => (
-                  <tr key={i}>
-                    <td className="px-4 py-3 text-center"><div className="h-4 w-4 bg-white/5 rounded animate-pulse mx-auto" /></td>
-                    {Array.from({ length: 7 }).map((__, j) => (
-                      <td key={j} className="px-4 py-3">
-                        <div className="h-4 bg-white/5 rounded animate-pulse" />
-                      </td>
-                    ))}
-                  </tr>
-                ))
-              ) : data.users.length === 0 ? (
-                <tr>
-                  <td colSpan={8} className="text-center text-slate-500 py-10">No users found matching query filters.</td>
-                </tr>
-              ) : (
-                data.users.map((u) => {
-                  const isSuperAdmin = u.email === ADMIN_EMAIL;
-                  const isRowChecked = selectedUserIds.includes(u._id);
-                  return (
-                    <tr key={u._id} className={`hover:bg-white/3 transition-colors ${isRowChecked ? 'bg-brand-600/5' : ''}`}>
-                      {/* Checkbox */}
-                      <td className="px-4 py-3 text-center">
-                        <input
-                          type="checkbox"
-                          checked={isRowChecked}
-                          onChange={() => handleSelectRow(u._id)}
-                          disabled={isSuperAdmin}
-                          className="w-4 h-4 bg-surface-card border-slate-600 rounded text-brand-600 focus:ring-brand-500 disabled:opacity-40"
-                        />
-                      </td>
+      <UserDrawer
+        userId={drawerUserId}
+        onClose={() => setDrawerUserId(null)}
+        onEdit={(u) => setEditUser(u)}
+        onDelete={handleDelete}
+        canDelete={isSuperAdmin}
+        deletingId={deletingId}
+      />
 
-                      {/* User Info */}
-                      <td className="px-4 py-3">
-                        <div className="flex items-center gap-3">
-                          <div className="w-8 h-8 rounded-full bg-gradient-to-br from-brand-600 to-brand-500 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
-                            {u.name?.[0]?.toUpperCase()}
-                          </div>
-                          <div className="min-w-0">
-                            <p className="text-white font-medium leading-tight flex items-center gap-1.5">
-                              {u.name}
-                              {u.isPremium && (
-                                <Star size={11} className="text-amber-400 fill-amber-400" title="Premium Subscriber" />
-                              )}
-                            </p>
-                            <p className="text-slate-500 text-xs truncate">{u.email}</p>
-                          </div>
-                        </div>
-                      </td>
-                      
-                      {/* Role & status */}
-                      <td className="px-4 py-3"><RoleBadge role={u.role} /></td>
-                      <td className="px-4 py-3"><StatusBadge isActive={u.isActive} isBanned={u.isBanned} /></td>
-                      
-                      {/* Credits & sessions count */}
-                      <td className="px-4 py-3 font-semibold text-slate-200">{u.credits ?? 10}</td>
-                      <td className="px-4 py-3 text-slate-300">{u.totalSessions ?? 0}</td>
-                      
-                      {/* Last Login date */}
-                      <td className="px-4 py-3 text-slate-400 text-xs">
-                        {u.lastLogin ? new Date(u.lastLogin).toLocaleDateString() : 'Never'}
-                      </td>
-
-                      {/* Single actions triggers */}
-                      <td className="px-4 py-3 text-right">
-                        <div className="flex items-center justify-end gap-1">
-                          {/* Profile drawer view */}
-                          <button
-                            title="View activity log"
-                            onClick={() => setActiveDrawerUserId(u._id)}
-                            className="p-1.5 rounded-lg text-slate-400 hover:text-emerald-400 hover:bg-emerald-500/10 transition-all"
-                          >
-                            <Eye size={14} />
-                          </button>
-                          
-                          {/* Edit user details */}
-                          <button
-                            title="Edit profile details"
-                            onClick={() => setEditUser(u)}
-                            className="p-1.5 rounded-lg text-slate-400 hover:text-blue-400 hover:bg-blue-500/10 transition-all"
-                          >
-                            <Edit3 size={14} />
-                          </button>
-
-                          {/* Delete profile */}
-                          {!isSuperAdmin && (
-                            <button
-                              title="Delete user profile"
-                              onClick={() => setDeleteUserObj(u)}
-                              className="p-1.5 rounded-lg text-slate-400 hover:text-red-400 hover:bg-red-500/10 transition-all"
-                            >
-                              <Trash2 size={14} />
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        {/* Pagination controls */}
-        {data.pages > 1 && (
-          <div className="flex items-center justify-between px-4 py-3 border-t border-white/8">
-            <p className="text-slate-500 text-xs">Page {page} of {data.pages}</p>
-            <div className="flex gap-2">
-              <button
-                disabled={page === 1}
-                onClick={() => setPage(p => p - 1)}
-                className="p-1.5 rounded-lg bg-white/5 border border-white/10 text-slate-400 hover:text-white disabled:opacity-40 transition-all"
-              >
-                <ChevronLeft size={15} />
-              </button>
-              <button
-                disabled={page === data.pages}
-                onClick={() => setPage(p => p + 1)}
-                className="p-1.5 rounded-lg bg-white/5 border border-white/10 text-slate-400 hover:text-white disabled:opacity-40 transition-all"
-              >
-                <ChevronRight size={15} />
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Modals trigger overlays */}
       {editUser && (
-        <EditUserModal user={editUser} onSave={handleUpdate} onClose={() => setEditUser(null)} />
-      )}
-      
-      {deleteUserObj && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-[#14142a] border border-white/10 rounded-2xl p-6 w-full max-w-sm shadow-2xl">
-            <h3 className="text-white font-semibold text-lg flex items-center gap-2 mb-2">
-              <AlertOctagon className="text-red-500" size={20} />
-              Confirm Deletion
-            </h3>
-            <p className="text-slate-400 text-xs leading-relaxed mb-5">
-              Are you sure you want to permanently delete candidate <span className="text-white font-semibold">{deleteUserObj.name}</span>? 
-              This will cascade delete all their interview templates, session records, and uploaded resume files.
-            </p>
-            <div className="flex gap-3">
-              <button
-                onClick={() => handleDelete(deleteUserObj._id)}
-                className="btn-danger flex-1"
-              >
-                Delete Account
-              </button>
-              <button
-                onClick={() => setDeleteUserObj(null)}
-                className="btn-secondary flex-1"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>
+        <EditUserModal
+          key={editUser._id}
+          user={editUser}
+          canAssignRoles={isSuperAdmin}
+          onClose={() => setEditUser(null)}
+          onSaved={refreshUsers}
+        />
       )}
     </div>
   );

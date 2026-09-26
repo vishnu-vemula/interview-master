@@ -1,104 +1,162 @@
 /**
- * pages/admin/AdminScraperPage.jsx
+ * AdminScraperPage — Adzuna job-scraper control room.
  *
- * Job Scraper Control Dashboard.
- * Manages scraper scheduling settings, country filters, remote tags,
- * keyword lists, manual triggers, and scraper historical trace logs.
+ * Scheduler state + manual run / pause / resume (POST /admin/scraper/run|pause|resume),
+ * schedule, country, remote filter and keyword pipeline (PATCH /admin/scraper/settings),
+ * and paginated run history (GET /admin/scraper/logs). Status and logs poll every 12s.
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import toast from 'react-hot-toast';
 import {
-  RefreshCw, Play, Pause, Save, Loader2, AlertCircle, CheckCircle,
-  Plus, X, Terminal, Clock, Settings, FileText, Globe
+  RefreshCw, Play, Pause, Save, Plus, X, Clock, Timer, Radar, History, Globe, Terminal,
+  AlertTriangle, Lock, Undo2, Tag,
 } from 'lucide-react';
 import {
   getAdminScraperStatus, updateAdminScraperSettings, triggerAdminScrape,
-  pauseAdminScraper, resumeAdminScraper, getAdminScraperLogs
+  pauseAdminScraper, resumeAdminScraper, getAdminScraperLogs,
 } from '@/services/admin.service';
-import toast from 'react-hot-toast';
+import { useAdminAuth } from '@/context';
+import {
+  Alert, Button, Card, EmptyState, ErrorState, Field, Input, PageHeader, Pagination, Pill,
+  Skeleton, Switch, TableShell, useConfirm,
+} from '@/components/ui';
+import { cn, formatDateTime, getErrorMessage, timeAgo } from '@/utils';
+
+const POLL_MS = 12000;
+const LOG_LIMIT = 8;
+
+const LOG_STATUS = {
+  success: { tone: 'ok', label: 'Success' },
+  failed: { tone: 'coral', label: 'Failed' },
+  running: { tone: 'blue', label: 'Running' },
+  interrupted: { tone: 'stone', label: 'Interrupted' },
+};
+
+const toDraft = (c) => ({
+  interval: String(c?.scrapeInterval ?? 60),
+  maxJobs: String(c?.maxJobs ?? 50),
+  country: c?.country ?? 'us',
+  remoteOnly: c?.remoteOnly ?? true,
+  keywords: Array.isArray(c?.keywords) ? c.keywords : [],
+});
+
+function formatDuration(start, end) {
+  if (!start || !end) return '—';
+  const secs = Math.max(0, Math.round((new Date(end) - new Date(start)) / 1000));
+  if (secs < 60) return `${secs}s`;
+  const m = Math.floor(secs / 60);
+  return `${m}m ${secs % 60}s`;
+}
+
+function validate(d) {
+  const e = {};
+  const interval = Number(d.interval);
+  if (String(d.interval).trim() === '' || !Number.isInteger(interval)) e.interval = 'Enter a whole number of minutes.';
+  else if (interval < 5) e.interval = 'The interval can’t be shorter than 5 minutes.';
+  const maxJobs = Number(d.maxJobs);
+  if (String(d.maxJobs).trim() === '' || !Number.isInteger(maxJobs)) e.maxJobs = 'Enter a whole number.';
+  else if (maxJobs < 5) e.maxJobs = 'Fetch at least 5 jobs per keyword.';
+  if (!/^[a-z]{2}$/i.test(d.country.trim())) e.country = 'Use a two-letter Adzuna country code, e.g. us, gb, in.';
+  return e;
+}
+
+function StatusTile({ label, value, sub, icon: Icon, tone = 'white', loading }) {
+  const tones = { white: 'card', ink: 'card-ink', lime: 'card-lime', blue: 'rounded-r24 bg-brand text-white' };
+  const subTone = { ink: 'text-on-dark', lime: 'text-lime-ink', blue: 'text-brand-50' }[tone] || 'text-muted';
+  return (
+    <div className={cn(tones[tone], 'flex min-h-[136px] flex-col p-5')}>
+      <div className="flex items-start justify-between gap-3">
+        <span className={cn('mono-label', subTone)}>{label}</span>
+        <span className={cn('grid h-8 w-8 flex-shrink-0 place-items-center rounded-full', tone === 'white' ? 'bg-stone-2' : 'bg-white/15')}>
+          <Icon size={15} aria-hidden="true" />
+        </span>
+      </div>
+      <div className="mt-auto pt-4 text-[28px] font-medium leading-none tracking-tight3">
+        {loading ? <Skeleton className="h-7 w-24" /> : value}
+      </div>
+      <p className={cn('mt-2 truncate text-[13px]', subTone)}>{loading ? ' ' : sub}</p>
+    </div>
+  );
+}
 
 export default function AdminScraperPage() {
-  const [config, setConfig]       = useState(null);
-  const [schedulerRunning, setSchedRunning] = useState(false);
-  
-  const [logs, setLogs]           = useState([]);
-  const [totalLogs, setTotalLogs] = useState(0);
-  const [logPage, setLogPage]     = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
-  
-  const [loading, setLoading]     = useState(true);
-  const [savingSettings, setSaving] = useState(false);
+  const queryClient = useQueryClient();
+  const confirm = useConfirm();
+  const { hasPermission } = useAdminAuth();
+  const canRun = hasPermission('run:scraper');
+  const canConfigure = hasPermission('update:settings');
+
+  const [logPage, setLogPage] = useState(1);
+  const [savingSettings, setSavingSettings] = useState(false);
   const [triggeringScrape, setTriggeringScrape] = useState(false);
+  const [togglingScheduler, setTogglingScheduler] = useState(false);
 
   // Settings form local state
-  const [interval, setIntervalVal] = useState(60);
-  const [maxJobs, setMaxJobs]       = useState(50);
-  const [country, setCountry]       = useState('us');
-  const [remoteOnly, setRemoteOnly] = useState(true);
-  const [keywords, setKeywords]     = useState([]);
+  const [draft, setDraft] = useState(null);
+  const [baseline, setBaseline] = useState(null);
+  const [errors, setErrors] = useState({});
+  const [serverError, setServerError] = useState('');
   const [newKeyword, setNewKeyword] = useState('');
+  const [keywordError, setKeywordError] = useState('');
 
-  // Fetch status and configuration
-  const fetchStatus = useCallback(async () => {
-    try {
-      const res = await getAdminScraperStatus();
-      if (res.success && res.data) {
-        const c = res.data.config;
-        setConfig(c);
-        setSchedRunning(res.data.schedulerRunning);
-        setIntervalVal(c.scrapeInterval);
-        setMaxJobs(c.maxJobs);
-        setCountry(c.country);
-        setRemoteOnly(c.remoteOnly);
-        setKeywords(c.keywords || []);
-      }
-    } catch {
-      toast.error('Failed to load scraper configurations.');
-    }
-  }, []);
+  // ── Status + configuration (polled) ──
+  const statusQuery = useQuery({
+    queryKey: ['admin-scraper-status'],
+    queryFn: getAdminScraperStatus,
+    refetchInterval: POLL_MS,
+  });
+  const statusData = statusQuery.data?.success ? statusQuery.data.data : null;
+  const config = statusData?.config || null;
+  const schedulerRunning = !!statusData?.schedulerRunning;
 
-  // Fetch logs history list
-  const fetchLogs = useCallback(async () => {
-    try {
-      const data = await getAdminScraperLogs({ page: logPage, limit: 8 });
-      setLogs(data.logs || []);
-      setTotalLogs(data.total || 0);
-      setTotalPages(data.pages || 1);
-    } catch {
-      toast.error('Failed to retrieve scraper logs.');
-    }
-  }, [logPage]);
+  // ── Run history (polled, paginated) ──
+  const logsQuery = useQuery({
+    queryKey: ['admin-scraper-logs', logPage],
+    queryFn: () => getAdminScraperLogs({ page: logPage, limit: LOG_LIMIT }),
+    refetchInterval: POLL_MS,
+    placeholderData: (prev) => prev,
+  });
+  const logs = logsQuery.data?.logs || [];
+  const totalLogs = logsQuery.data?.total || 0;
+  const totalPages = logsQuery.data?.pages || 1;
 
-  const loadData = useCallback(async () => {
-    setLoading(true);
-    await Promise.all([fetchStatus(), fetchLogs()]);
-    setLoading(false);
-  }, [fetchStatus, fetchLogs]);
+  const serverDraft = useMemo(() => (config ? toDraft(config) : null), [config]);
+  const dirty = !!draft && !!baseline && JSON.stringify(draft) !== JSON.stringify(baseline);
 
+  // Sync the form from the server — but never clobber edits in progress during polling.
   useEffect(() => {
-    loadData();
-  }, [loadData]);
+    if (!serverDraft) return;
+    if (!draft || !dirty) {
+      setDraft(serverDraft);
+      setBaseline(serverDraft);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serverDraft]);
 
-  // Periodic poll of status and logs (helps monitor background runs)
-  useEffect(() => {
-    const timer = setInterval(() => {
-      fetchStatus();
-      fetchLogs();
-    }, 12000); // 12 seconds
-    return () => clearInterval(timer);
-  }, [fetchStatus, fetchLogs]);
+  const refreshAll = () => {
+    queryClient.invalidateQueries({ queryKey: ['admin-scraper-status'] });
+    queryClient.invalidateQueries({ queryKey: ['admin-scraper-logs'] });
+  };
 
   // Handle manual run trigger
   const handleTriggerScrape = async () => {
     if (config?.status === 'running') return;
+    const count = config?.keywords?.length || 0;
+    const ok = await confirm({
+      title: 'Run the scraper now?',
+      description: `This queries Adzuna for ${count} keyword${count === 1 ? '' : 's'} and imports up to ${config?.maxJobs ?? 50} listings per keyword. It runs in the background.`,
+      confirmLabel: 'Run scraper',
+    });
+    if (!ok) return;
     setTriggeringScrape(true);
     try {
       await triggerAdminScrape();
-      toast.success('Job scraper task triggered. Check logs for updates.');
-      fetchStatus();
-      fetchLogs();
-    } catch {
-      toast.error('Trigger failure.');
+      toast.success('Scrape started. Progress appears in the run history.');
+      refreshAll();
+    } catch (err) {
+      toast.error(getErrorMessage(err, 'Couldn’t start the scraper.'));
     } finally {
       setTriggeringScrape(false);
     }
@@ -106,6 +164,16 @@ export default function AdminScraperPage() {
 
   // Pause / Resume scheduler
   const handleToggleScheduler = async () => {
+    if (config?.isActiveScheduler) {
+      const ok = await confirm({
+        title: 'Pause the scheduler?',
+        description: 'Automatic imports stop until the scheduler is resumed. Manual runs still work.',
+        confirmLabel: 'Pause scheduler',
+        tone: 'danger',
+      });
+      if (!ok) return;
+    }
+    setTogglingScheduler(true);
     try {
       if (config?.isActiveScheduler) {
         await pauseAdminScraper();
@@ -114,414 +182,420 @@ export default function AdminScraperPage() {
         await resumeAdminScraper();
         toast.success('Scheduler resumed.');
       }
-      fetchStatus();
-    } catch {
-      toast.error('Toggle scheduler action failed.');
+      queryClient.invalidateQueries({ queryKey: ['admin-scraper-status'] });
+    } catch (err) {
+      toast.error(getErrorMessage(err, 'Couldn’t change the scheduler state.'));
+      queryClient.invalidateQueries({ queryKey: ['admin-scraper-status'] });
+    } finally {
+      setTogglingScheduler(false);
     }
+  };
+
+  const setField = (key) => (value) => {
+    setDraft((d) => ({ ...d, [key]: value }));
+    if (errors[key]) setErrors((e) => { const next = { ...e }; delete next[key]; return next; });
+    setServerError('');
   };
 
   // Save Settings Form
   const handleSaveSettings = async (e) => {
     e.preventDefault();
+    if (!canConfigure || !draft) return;
+    const v = validate(draft);
+    setErrors(v);
+    if (Object.keys(v).length) {
+      document.getElementById(`scraper-${Object.keys(v)[0]}`)?.focus();
+      return;
+    }
     setSavingSettings(true);
+    setServerError('');
     try {
-      await updateAdminScraperSettings({
-        scrapeInterval: parseInt(interval) || 60,
-        maxJobs: parseInt(maxJobs) || 50,
-        keywords,
-        country: country.toLowerCase().trim(),
-        remoteOnly,
+      const saved = await updateAdminScraperSettings({
+        scrapeInterval: parseInt(draft.interval, 10) || 60,
+        maxJobs: parseInt(draft.maxJobs, 10) || 50,
+        keywords: draft.keywords,
+        country: draft.country.toLowerCase().trim(),
+        remoteOnly: draft.remoteOnly,
       });
-      toast.success('Configurations saved successfully.');
-      fetchStatus();
-    } catch {
-      toast.error('Error saving scraper configurations.');
+      toast.success('Scraper configuration saved.');
+      if (saved) {
+        const next = toDraft(saved);
+        setDraft(next);
+        setBaseline(next);
+      }
+      queryClient.invalidateQueries({ queryKey: ['admin-scraper-status'] });
+    } catch (err) {
+      setServerError(getErrorMessage(err, 'Couldn’t save the scraper configuration.'));
+      toast.error('Scraper configuration wasn’t saved.');
     } finally {
       setSavingSettings(false);
     }
   };
 
+  const discard = () => {
+    if (baseline) setDraft(baseline);
+    setErrors({});
+    setServerError('');
+    setKeywordError('');
+    setNewKeyword('');
+  };
+
   // Keywords management
   const addKeyword = () => {
     const kw = newKeyword.trim();
-    if (kw && !keywords.includes(kw)) {
-      setKeywords(p => [...p, kw]);
-      setNewKeyword('');
+    if (!kw) return;
+    if (draft.keywords.some((k) => k.toLowerCase() === kw.toLowerCase())) {
+      setKeywordError(`“${kw}” is already in the pipeline.`);
+      return;
     }
+    setField('keywords')([...draft.keywords, kw]);
+    setNewKeyword('');
+    setKeywordError('');
   };
 
   const removeKeyword = (kw) => {
-    setKeywords(p => p.filter(k => k !== kw));
+    setField('keywords')(draft.keywords.filter((k) => k !== kw));
   };
 
+  const isRunning = config?.status === 'running';
+  const statusLoading = statusQuery.isLoading;
+  const adzunaEnabled = (config?.enabledSources || ['adzuna']).includes('adzuna');
+
+  if (statusQuery.isError && !statusData) {
+    return (
+      <div className="space-y-8">
+        <PageHeader eyebrow="Admin · System" title="Job scraper" description="Adzuna sync schedule, keyword pipeline and run history." />
+        <ErrorState
+          title="Couldn’t load the scraper status"
+          description={getErrorMessage(statusQuery.error, 'The scraper service did not respond.')}
+          onRetry={() => statusQuery.refetch()}
+        />
+      </div>
+    );
+  }
+
   return (
-    <div className="space-y-6 max-w-[1600px] mx-auto pb-8 relative">
+    <div className="space-y-8">
+      <PageHeader
+        eyebrow="Admin · System"
+        title="Job scraper"
+        description="Adzuna sync schedule, keyword pipeline and run history for imported job listings."
+        actions={
+          <>
+            <Button
+              variant="soft"
+              icon={RefreshCw}
+              onClick={refreshAll}
+              loading={(statusQuery.isFetching || logsQuery.isFetching) && !statusLoading}
+            >
+              Refresh
+            </Button>
+            {canRun && (
+              <>
+                {config && (
+                  <Button
+                    variant="soft"
+                    icon={config.isActiveScheduler ? Pause : Play}
+                    onClick={handleToggleScheduler}
+                    loading={togglingScheduler}
+                  >
+                    {config.isActiveScheduler ? 'Pause scheduler' : 'Resume scheduler'}
+                  </Button>
+                )}
+                <Button
+                  variant="ink"
+                  icon={Play}
+                  onClick={handleTriggerScrape}
+                  loading={isRunning || triggeringScrape}
+                  disabled={!config}
+                >
+                  {isRunning ? 'Scraping…' : 'Run scraper now'}
+                </Button>
+              </>
+            )}
+          </>
+        }
+      />
 
-      {/* ── Header ───────────────────────────────────────────── */}
-      <div>
-        <h1 className="text-2xl font-bold text-white tracking-tight">Job Scraper Control</h1>
-        <p className="text-slate-400 text-sm mt-0.5">Configure Adzuna sync queues, modify keyword pipelines, and trigger scraping operations</p>
+      {/* ── Scheduler status ── */}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <StatusTile
+          tone="ink"
+          icon={Clock}
+          label="Scheduler"
+          loading={statusLoading}
+          value={config?.isActiveScheduler ? 'Active' : 'Paused'}
+          sub={schedulerRunning ? 'Timer running in the API' : 'No timer running in the API'}
+        />
+        <StatusTile
+          tone={isRunning ? 'blue' : 'white'}
+          icon={Radar}
+          label="Run status"
+          loading={statusLoading}
+          value={<span className="capitalize">{config?.status || 'idle'}</span>}
+          sub={isRunning ? 'Importing listings now' : 'Waiting for the next run'}
+        />
+        <StatusTile
+          icon={Timer}
+          label="Interval"
+          loading={statusLoading}
+          value={<span className="tabular">{config?.scrapeInterval ?? '—'} min</span>}
+          sub={`Up to ${config?.maxJobs ?? '—'} jobs per keyword`}
+        />
+        <StatusTile
+          icon={History}
+          label="Last run"
+          loading={statusLoading}
+          value={config?.lastRun ? timeAgo(config.lastRun) : 'Never'}
+          sub={config?.lastRun ? formatDateTime(config.lastRun) : 'No completed runs yet'}
+        />
       </div>
 
-      {/* ── Status & Actions Grid ────────────────────────────── */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-        
-        {/* Scheduler Status widget */}
-        <div className="card p-5 bg-[#0f0f22]/30 border-white/[0.06] md:col-span-2 flex flex-col justify-between">
-          <div>
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-white text-sm font-semibold flex items-center gap-2">
-                <Clock size={16} className="text-indigo-400" />
-                Scheduler Details
-              </h3>
-              
-              {/* Scheduler state badge */}
-              {config?.isActiveScheduler ? (
-                <span className="badge bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 flex items-center gap-1.5 animate-pulse">
-                  <CheckCircle size={10} /> Active
-                </span>
-              ) : (
-                <span className="badge bg-slate-500/20 text-slate-400 border border-slate-500/30 flex items-center gap-1.5">
-                  <Pause size={10} /> Paused
-                </span>
-              )}
+      {config?.isActiveScheduler && !schedulerRunning && !statusLoading && (
+        <Alert tone="warn" icon={AlertTriangle} title="Schedule enabled, but no timer is running">
+          The scheduler is switched on in the saved configuration, but the API process has no active timer, so automatic imports won’t fire.
+        </Alert>
+      )}
+
+      <div className="grid grid-cols-1 items-start gap-3 lg:grid-cols-3">
+        {/* ── Configuration + keywords ── */}
+        <Card className="p-5 sm:p-6 lg:col-span-2">
+          <form onSubmit={handleSaveSettings} noValidate>
+            <div className="mb-6 flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-[17px] font-medium tracking-tight1">Configuration</h2>
+                <p className="mt-0.5 text-[13.5px] text-muted">Schedule, search scope and the keywords each run queries.</p>
+              </div>
+              {dirty && <Pill tone="blue" mono>Unsaved</Pill>}
             </div>
 
-            <div className="space-y-2 mt-2">
-              <div className="flex justify-between border-b border-white/[0.04] pb-2 text-xs">
-                <span className="text-slate-500">Scheduler Service</span>
-                <span className="text-slate-300 font-medium">{schedulerRunning ? 'Active Daemon' : 'Inactive'}</span>
-              </div>
-              <div className="flex justify-between border-b border-white/[0.04] pb-2 text-xs">
-                <span className="text-slate-500">Interval Settings</span>
-                <span className="text-slate-300 font-medium">Every {config?.scrapeInterval} minutes</span>
-              </div>
-              <div className="flex justify-between border-b border-white/[0.04] pb-2 text-xs">
-                <span className="text-slate-500">Last Scrape Triggered</span>
-                <span className="text-slate-300 font-medium">
-                  {config?.lastRun ? new Date(config.lastRun).toLocaleString() : 'Never'}
-                </span>
-              </div>
-              <div className="flex justify-between text-xs">
-                <span className="text-slate-500">Status</span>
-                <span className={`font-semibold capitalize
-                  ${config?.status === 'running' ? 'text-blue-400 animate-pulse' : 'text-slate-300'}`}>
-                  {config?.status || 'idle'}
-                </span>
-              </div>
-            </div>
-          </div>
+            {!canConfigure && (
+              <Alert tone="info" icon={Lock} className="mb-5">
+                Your role can run the scraper but not change its configuration.
+              </Alert>
+            )}
 
-          <div className="flex gap-3 pt-5 border-t border-white/[0.04] mt-5">
-            <button
-              onClick={handleTriggerScrape}
-              disabled={config?.status === 'running' || triggeringScrape}
-              className="btn-primary flex-1 flex items-center justify-center gap-2"
-            >
-              {config?.status === 'running' ? (
-                <>
-                  <Loader2 size={14} className="animate-spin" />
-                  Scraping...
-                </>
-              ) : (
-                <>
-                  <Play size={14} />
-                  Run Scraper Now
-                </>
-              )}
-            </button>
-            <button
-              onClick={handleToggleScheduler}
-              className={`btn-secondary flex-1 flex items-center justify-center gap-2 
-                ${config?.isActiveScheduler ? 'hover:text-red-400 hover:bg-red-500/10' : 'hover:text-emerald-400 hover:bg-emerald-500/10'}`}
-            >
-              {config?.isActiveScheduler ? (
-                <>
-                  <Pause size={14} />
-                  Pause Scheduler
-                </>
-              ) : (
-                <>
-                  <Play size={14} />
-                  Resume Scheduler
-                </>
-              )}
-            </button>
-          </div>
-        </div>
-
-        {/* Sync Sources Panel */}
-        <div className="card p-5 bg-[#0f0f22]/30 border-white/[0.06] flex flex-col justify-between">
-          <div>
-            <h3 className="text-white text-sm font-semibold flex items-center gap-2 mb-4">
-              <Globe size={16} className="text-blue-400" />
-              Source Pipelines
-            </h3>
-            
-            <div className="space-y-3">
-              <label className="flex items-center justify-between p-3 rounded-xl bg-white/[0.02] border border-white/[0.05] cursor-pointer">
-                <div className="flex items-center gap-3">
-                  <Globe size={15} className="text-blue-400" />
-                  <div>
-                    <p className="text-xs font-semibold text-white">Adzuna Jobs</p>
-                    <p className="text-[10px] text-slate-500">API search connections</p>
+            {!draft ? (
+              <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+                {[0, 1, 2, 3].map((i) => (
+                  <div key={i} className="space-y-2"><Skeleton className="h-3.5 w-28" /><Skeleton className="h-12 rounded-r14" /></div>
+                ))}
+              </div>
+            ) : (
+              <fieldset disabled={!canConfigure || savingSettings} className="min-w-0">
+                <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+                  <Field label="Scrape interval (minutes)" required error={errors.interval} hint="Minimum 5 minutes.">
+                    <Input id="scraper-interval" type="number" min="5" step="1" inputMode="numeric" value={draft.interval} onChange={(e) => setField('interval')(e.target.value)} />
+                  </Field>
+                  <Field label="Max jobs per keyword" required error={errors.maxJobs} hint="Per keyword, per run. Minimum 5.">
+                    <Input id="scraper-maxJobs" type="number" min="5" step="1" inputMode="numeric" value={draft.maxJobs} onChange={(e) => setField('maxJobs')(e.target.value)} />
+                  </Field>
+                  <Field label="Country (Adzuna code)" required error={errors.country}>
+                    <Input
+                      id="scraper-country"
+                      icon={Globe}
+                      maxLength={2}
+                      value={draft.country}
+                      onChange={(e) => setField('country')(e.target.value)}
+                      placeholder="us, gb, in"
+                      className="font-mono uppercase"
+                      autoComplete="off"
+                    />
+                  </Field>
+                  <div className="field-label">
+                    <span>Remote filter</span>
+                    <div className="flex items-center justify-between gap-4 rounded-r14 border border-line bg-paper px-4 py-[12px]">
+                      <label htmlFor="scraper-remoteOnly" className="cursor-pointer text-[15px] font-normal">Remote-only postings</label>
+                      <Switch id="scraper-remoteOnly" checked={draft.remoteOnly} onChange={setField('remoteOnly')} label="Remote-only postings" />
+                    </div>
+                    <span className="field-hint">{draft.remoteOnly ? 'On-site roles are skipped.' : 'On-site and remote roles are imported.'}</span>
                   </div>
                 </div>
-                <input
-                  type="checkbox"
-                  checked
-                  readOnly
-                  className="w-4 h-4 bg-surface-card border-slate-600 rounded text-brand-600 focus:ring-brand-500"
-                />
-              </label>
 
-              <label className="flex items-center justify-between p-3 rounded-xl bg-white/[0.02] border border-white/[0.05] opacity-50 cursor-not-allowed">
-                <div className="flex items-center gap-3">
-                  <Terminal size={15} className="text-slate-400" />
-                  <div>
-                    <p className="text-xs font-semibold text-white">LinkedIn Web</p>
-                    <p className="text-[10px] text-slate-500">HTML scraper pipeline</p>
-                  </div>
-                </div>
-                <input
-                  type="checkbox"
-                  disabled
-                  className="w-4 h-4 bg-surface-card border-slate-600 rounded text-brand-600 focus:ring-brand-500"
-                />
-              </label>
-            </div>
-          </div>
-          <p className="text-[10px] text-slate-600 mt-4 leading-relaxed">
-            API connections run deterministic mappings. Unlicensed web scraper triggers are disabled by default.
-          </p>
-        </div>
-      </div>
-
-      {/* ── Settings Form & Keywords Editor ──────────────────── */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        
-        {/* Scraper Settings Form */}
-        <form onSubmit={handleSaveSettings} className="lg:col-span-2 card p-5 bg-[#0f0f22]/30 border-white/[0.06] space-y-4">
-          <h3 className="text-white text-sm font-semibold flex items-center gap-2 border-b border-white/10 pb-2 flex-shrink-0">
-            <Settings size={16} className="text-slate-400" />
-            Configuration Parameters
-          </h3>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {/* Scrape Interval */}
-            <div>
-              <label className="form-label">Scrape Interval (Minutes)</label>
-              <input
-                type="number"
-                min="5"
-                className="form-input"
-                value={interval}
-                onChange={(e) => setIntervalVal(e.target.value)}
-                required
-              />
-            </div>
-
-            {/* Max Jobs */}
-            <div>
-              <label className="form-label">Max Jobs (per keyword/run)</label>
-              <input
-                type="number"
-                min="5"
-                className="form-input"
-                value={maxJobs}
-                onChange={(e) => setMaxJobs(e.target.value)}
-                required
-              />
-            </div>
-
-            {/* Country */}
-            <div>
-              <label className="form-label">Pipeline Country (Adzuna Code)</label>
-              <input
-                type="text"
-                maxLength="2"
-                className="form-input"
-                value={country}
-                onChange={(e) => setCountry(e.target.value)}
-                placeholder="e.g. us, gb, in"
-                required
-              />
-            </div>
-
-            {/* Remote Only */}
-            <div className="flex items-center pt-6">
-              <label className="flex items-center gap-2.5 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={remoteOnly}
-                  onChange={(e) => setRemoteOnly(e.target.checked)}
-                  className="w-4 h-4 bg-surface-card border-slate-600 rounded text-brand-600 focus:ring-brand-500"
-                />
-                <span className="text-slate-300 text-xs font-semibold">Remote Only Postings</span>
-              </label>
-            </div>
-          </div>
-
-          <div className="flex justify-end pt-2 border-t border-white/[0.04]">
-            <button
-              type="submit"
-              disabled={savingSettings}
-              className="btn-primary px-6 flex items-center justify-center gap-2"
-            >
-              {savingSettings ? (
-                <>
-                  <Loader2 size={14} className="animate-spin" />
-                  Saving...
-                </>
-              ) : (
-                <>
-                  <Save size={14} />
-                  Save Configurations
-                </>
-              )}
-            </button>
-          </div>
-        </form>
-
-        {/* Keywords Editor Card */}
-        <div className="card p-5 bg-[#0f0f22]/30 border-white/[0.06] flex flex-col justify-between">
-          <div>
-            <h3 className="text-white text-sm font-semibold flex items-center gap-2 border-b border-white/10 pb-2 mb-4">
-              <Terminal size={16} className="text-slate-400" />
-              Keywords Pipeline
-            </h3>
-
-            {/* Keyword tags */}
-            <div className="flex flex-wrap gap-1.5 max-h-36 overflow-y-auto pr-1">
-              {keywords.length === 0 ? (
-                <span className="text-xs text-slate-500">No active keywords configured.</span>
-              ) : (
-                keywords.map(kw => (
-                  <span key={kw} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-indigo-500/10 border border-indigo-500/20 text-indigo-300 text-xs font-semibold">
-                    {kw}
-                    <button onClick={() => removeKeyword(kw)} className="text-slate-500 hover:text-white transition-colors" type="button">
-                      <X size={10} />
-                    </button>
-                  </span>
-                ))
-              )}
-            </div>
-          </div>
-
-          {/* Add keyword input */}
-          <div className="pt-4 border-t border-white/[0.04] mt-4 flex gap-2">
-            <input
-              className="form-input text-xs"
-              placeholder="e.g. Docker, AWS…"
-              value={newKeyword}
-              onChange={(e) => setNewKeyword(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && addKeyword()}
-            />
-            <button
-              type="button"
-              onClick={addKeyword}
-              className="p-2 rounded-xl bg-brand-600 hover:bg-brand-500 text-white transition-all flex-shrink-0"
-            >
-              <Plus size={16} />
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* ── Historical Logs Table ────────────────────────────── */}
-      <div className="card overflow-hidden">
-        <div className="px-4 py-3 border-b border-white/8 bg-white/3 flex items-center gap-2 flex-shrink-0">
-          <FileText size={15} className="text-slate-400" />
-          <h3 className="text-white font-semibold text-sm">Scraper Audit Log Sheet</h3>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-white/8 bg-white/2">
-                <th className="text-left text-slate-400 font-medium px-4 py-3">Start Time</th>
-                <th className="text-left text-slate-400 font-medium px-4 py-3">Duration</th>
-                <th className="text-left text-slate-400 font-medium px-4 py-3">Status</th>
-                <th className="text-left text-slate-400 font-medium px-4 py-3">Imported</th>
-                <th className="text-left text-slate-400 font-medium px-4 py-3">Updated</th>
-                <th className="text-left text-slate-400 font-medium px-4 py-3">Duplicates</th>
-                <th className="text-left text-slate-400 font-medium px-4 py-3">Errors</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-white/5">
-              {loading ? (
-                Array.from({ length: 4 }).map((_, i) => (
-                  <tr key={i}>
-                    {Array.from({ length: 7 }).map((__, j) => (
-                      <td key={j} className="px-4 py-3">
-                        <div className="h-4 bg-white/5 rounded animate-pulse" />
-                      </td>
+                <p className="divider-label mb-4 mt-8">Keyword pipeline</p>
+                {draft.keywords.length === 0 ? (
+                  <p className="rounded-r14 border border-dashed border-line bg-paper px-4 py-3 text-[13.5px] text-muted">
+                    No keywords configured — runs will not import anything until you add one.
+                  </p>
+                ) : (
+                  <ul className="flex flex-wrap gap-2" aria-label="Keywords">
+                    {draft.keywords.map((kw) => (
+                      <li key={kw} className="inline-flex items-center gap-1.5 rounded-full border border-line bg-white py-1.5 pl-3 pr-1.5 text-[13.5px]">
+                        <Tag size={12} className="text-faint" aria-hidden="true" />
+                        {kw}
+                        <button
+                          type="button"
+                          onClick={() => removeKeyword(kw)}
+                          aria-label={`Remove keyword ${kw}`}
+                          className="grid h-6 w-6 place-items-center rounded-full text-muted transition-colors hover:bg-coral-soft hover:text-coral disabled:pointer-events-none"
+                        >
+                          <X size={12} />
+                        </button>
+                      </li>
                     ))}
-                  </tr>
-                ))
-              ) : logs.length === 0 ? (
-                <tr>
-                  <td colSpan={7} className="text-center text-slate-500 py-10">No scraper execution logs recorded yet.</td>
+                  </ul>
+                )}
+                <div className="mt-4">
+                  <div className="flex gap-2">
+                    <Input
+                      id="scraper-newKeyword"
+                      aria-label="New keyword"
+                      aria-invalid={keywordError ? true : undefined}
+                      aria-describedby={keywordError ? 'scraper-newKeyword-error' : undefined}
+                      invalid={!!keywordError}
+                      className="min-w-0 flex-1"
+                      placeholder="Add a keyword, e.g. Docker"
+                      value={newKeyword}
+                      onChange={(e) => { setNewKeyword(e.target.value); setKeywordError(''); }}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addKeyword(); } }}
+                    />
+                    <Button variant="soft" icon={Plus} onClick={addKeyword} disabled={!newKeyword.trim()} className="flex-shrink-0 self-stretch">
+                      Add
+                    </Button>
+                  </div>
+                  {keywordError && (
+                    <p id="scraper-newKeyword-error" role="alert" className="field-error-text mt-1.5">{keywordError}</p>
+                  )}
+                </div>
+              </fieldset>
+            )}
+
+            {serverError && (
+              <Alert tone="error" className="mt-5" title="Configuration wasn’t saved">{serverError}</Alert>
+            )}
+
+            {canConfigure && draft && (
+              <div className="mt-6 flex items-center gap-2 border-t border-line-2 pt-5 sm:justify-end">
+                <Button variant="ghost" icon={Undo2} onClick={discard} disabled={!dirty || savingSettings} className="px-3 sm:px-[18px]">
+                  <span className="sr-only sm:not-sr-only">Discard</span>
+                </Button>
+                <Button type="submit" variant="ink" icon={Save} loading={savingSettings} className="flex-1 sm:flex-none">
+                  {savingSettings ? 'Saving…' : 'Save configuration'}
+                </Button>
+              </div>
+            )}
+          </form>
+        </Card>
+
+        {/* ── Sources ── */}
+        <Card className="p-5 sm:p-6">
+          <h2 className="text-[17px] font-medium tracking-tight1">Sources</h2>
+          <p className="mt-0.5 text-[13.5px] text-muted">Where scraped listings come from.</p>
+          <ul className="mt-5 space-y-2">
+            <li className="flex items-center gap-3 rounded-r14 border border-line-2 bg-paper px-3.5 py-3">
+              <span className="grid h-9 w-9 flex-shrink-0 place-items-center rounded-r9 bg-brand-50 text-brand-600">
+                <Globe size={16} aria-hidden="true" />
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-[14px] font-medium">Adzuna Jobs</p>
+                <p className="text-[12.5px] text-muted">API search connection</p>
+              </div>
+              {statusLoading ? <Skeleton className="h-6 w-16 rounded-full" /> : adzunaEnabled ? <Pill tone="ok" mono>Enabled</Pill> : <Pill tone="stone" mono>Off</Pill>}
+            </li>
+            <li className="flex items-center gap-3 rounded-r14 border border-line-2 px-3.5 py-3 opacity-70">
+              <span className="grid h-9 w-9 flex-shrink-0 place-items-center rounded-r9 bg-stone-2 text-muted">
+                <Terminal size={16} aria-hidden="true" />
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-[14px] font-medium">LinkedIn web</p>
+                <p className="text-[12.5px] text-muted">HTML scraper pipeline</p>
+              </div>
+              <Pill tone="outline" mono>Disabled</Pill>
+            </li>
+          </ul>
+          <p className="mt-4 text-[12.5px] leading-relaxed text-muted">
+            API connections use deterministic field mappings. Unlicensed web scraping stays disabled.
+          </p>
+        </Card>
+      </div>
+
+      {/* ── Run history ── */}
+      <section className="space-y-3" aria-labelledby="scraper-history-title">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h2 id="scraper-history-title" className="text-[17px] font-medium tracking-tight1">Run history</h2>
+          {logsQuery.data && (
+            <span className="mono-label text-muted tabular">{totalLogs} run{totalLogs === 1 ? '' : 's'} recorded</span>
+          )}
+        </div>
+
+        {logsQuery.isLoading ? (
+          <TableShell minWidth={760}>
+            <tbody>
+              {[0, 1, 2, 3].map((i) => (
+                <tr key={i}>
+                  {[0, 1, 2, 3, 4, 5, 6].map((j) => (
+                    <td key={j}><Skeleton className="h-4 w-full" /></td>
+                  ))}
                 </tr>
-              ) : (
-                logs.map(log => {
-                  const duration = log.endTime
-                    ? `${Math.round((new Date(log.endTime) - new Date(log.startTime)) / 1000)}s`
-                    : '—';
-                  
+              ))}
+            </tbody>
+          </TableShell>
+        ) : logsQuery.isError && !logsQuery.data ? (
+          <ErrorState
+            compact
+            title="Couldn’t load the run history"
+            description={getErrorMessage(logsQuery.error, 'The scraper log service did not respond.')}
+            onRetry={() => logsQuery.refetch()}
+          />
+        ) : logs.length === 0 ? (
+          <EmptyState
+            compact
+            icon={History}
+            title="No scraper runs yet"
+            description="Each scheduled or manual run is logged here with its imports, duplicates and errors."
+          />
+        ) : (
+          <>
+            <TableShell minWidth={760}>
+              <thead>
+                <tr>
+                  <th>Started</th>
+                  <th>Duration</th>
+                  <th>Status</th>
+                  <th className="text-right">Imported</th>
+                  <th className="text-right">Updated</th>
+                  <th className="text-right">Duplicates</th>
+                  <th>Error</th>
+                </tr>
+              </thead>
+              <tbody>
+                {logs.map((log) => {
+                  const st = LOG_STATUS[log.status] || { tone: 'stone', label: log.status || 'Unknown' };
                   return (
-                    <tr key={log._id} className="hover:bg-white/2 transition-colors">
-                      <td className="px-4 py-3 text-slate-300 text-xs">
-                        {new Date(log.startTime).toLocaleString()}
+                    <tr key={log._id}>
+                      <td className="whitespace-nowrap">
+                        <span className="block text-[14px]">{formatDateTime(log.startTime)}</span>
+                        <span className="font-mono text-[10.5px] uppercase tracking-mono text-faint">{timeAgo(log.startTime)}</span>
                       </td>
-                      <td className="px-4 py-3 text-slate-400 text-xs">{duration}</td>
-                      <td className="px-4 py-3">
-                        {log.status === 'success' && (
-                          <span className="badge bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">Success</span>
-                        )}
-                        {log.status === 'failed' && (
-                          <span className="badge bg-red-500/10 text-red-400 border border-red-500/20">Failed</span>
-                        )}
-                        {log.status === 'running' && (
-                          <span className="badge bg-blue-500/10 text-blue-400 border border-blue-500/20 animate-pulse">Running</span>
-                        )}
-                        {log.status === 'interrupted' && (
-                          <span className="badge bg-amber-500/10 text-amber-400 border border-amber-500/20">Interrupted</span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 font-semibold text-slate-200">{log.jobsImported ?? 0}</td>
-                      <td className="px-4 py-3 text-slate-300">{log.jobsUpdated ?? 0}</td>
-                      <td className="px-4 py-3 text-slate-500">{log.duplicateCount ?? 0}</td>
-                      <td className="px-4 py-3 text-slate-500 text-xs truncate max-w-[200px]" title={log.error}>
+                      <td className="whitespace-nowrap font-mono text-[13px] text-muted tabular">{formatDuration(log.startTime, log.endTime)}</td>
+                      <td><Pill tone={st.tone} mono>{st.label}</Pill></td>
+                      <td className="text-right font-medium tabular">{log.jobsImported ?? 0}</td>
+                      <td className="text-right tabular text-muted-strong">{log.jobsUpdated ?? 0}</td>
+                      <td className="text-right tabular text-muted">{log.duplicateCount ?? 0}</td>
+                      <td className="max-w-[260px]">
                         {log.error ? (
-                          <span className="text-red-400 flex items-center gap-1">
-                            <AlertCircle size={12} /> {log.error}
+                          <span className="flex items-start gap-1.5 text-[13px] text-coral" title={log.error}>
+                            <AlertTriangle size={13} className="mt-0.5 flex-shrink-0" aria-hidden="true" />
+                            <span className="line-clamp-2 break-words">{log.error}</span>
                           </span>
-                        ) : '—'}
+                        ) : (
+                          <span className="text-faint">—</span>
+                        )}
                       </td>
                     </tr>
                   );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        {/* Pagination */}
-        {totalPages > 1 && (
-          <div className="flex items-center justify-between px-4 py-3 border-t border-white/8">
-            <p className="text-slate-500 text-xs">Page {logPage} of {totalPages}</p>
-            <div className="flex gap-2">
-              <button disabled={logPage === 1} onClick={() => setLogPage(p => p - 1)} className="p-1.5 rounded-lg bg-white/5 border border-white/10 text-slate-400 hover:text-white disabled:opacity-40 transition-all">
-                <ChevronLeft size={15} />
-              </button>
-              <button disabled={logPage === totalPages} onClick={() => setLogPage(p => p + 1)} className="p-1.5 rounded-lg bg-white/5 border border-white/10 text-slate-400 hover:text-white disabled:opacity-40 transition-all">
-                <ChevronRight size={15} />
-              </button>
-            </div>
-          </div>
+                })}
+              </tbody>
+            </TableShell>
+            <Pagination
+              page={logPage}
+              totalPages={totalPages}
+              onPageChange={setLogPage}
+              disabled={logsQuery.isFetching}
+            />
+          </>
         )}
-      </div>
-
+      </section>
     </div>
   );
 }

@@ -1,78 +1,40 @@
 /**
- * components/admin/sidebar/MobileDrawer.jsx
- *
- * Mobile sidebar drawer — slides in from the left on small screens.
- * Features:
- *  - Animated slide-in with backdrop overlay
- *  - Full sidebar content (via AdminSidebar)
- *  - Close button in header
- *  - Closes on backdrop click
- *  - Body scroll lock while open
- *
- * Props:
- *  open    — boolean — whether the drawer is open
- *  onClose — fn      — called to close the drawer
+ * MobileDrawer — admin sidebar as a slide-in sheet on < lg screens.
  */
 
 import { useEffect } from 'react';
-import { X, Shield } from 'lucide-react';
+import { X } from 'lucide-react';
 import AdminSidebar from './admin-sidebar';
 
 export default function MobileDrawer({ open, onClose }) {
-
-  // Lock body scroll when drawer is open
   useEffect(() => {
-    if (open) {
-      document.body.style.overflow = 'hidden';
-    } else {
-      document.body.style.overflow = '';
-    }
+    document.body.style.overflow = open ? 'hidden' : '';
     return () => { document.body.style.overflow = ''; };
   }, [open]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, onClose]);
 
   if (!open) return null;
 
   return (
-    <>
-      {/* Backdrop */}
-      <div
-        className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 lg:hidden"
-        onClick={onClose}
-        aria-hidden="true"
-      />
-
-      {/* Drawer panel */}
-      <aside
-        className="
-          fixed left-0 top-0 h-full w-64 z-50 lg:hidden
-          bg-[#0c0c1d] border-r border-white/[0.07]
-          shadow-2xl shadow-black/50
-          animate-in slide-in-from-left duration-200
-        "
-      >
-        {/* Drawer header with close button */}
-        <div className="flex items-center justify-between px-4 h-16 border-b border-white/[0.07]">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-red-500 to-orange-500 flex items-center justify-center">
-              <Shield size={15} className="text-white" />
-            </div>
-            <span className="text-white font-bold text-sm">Admin Panel</span>
-          </div>
-          <button
-            onClick={onClose}
-            className="w-8 h-8 rounded-lg bg-white/5 flex items-center justify-center
-                       text-slate-400 hover:text-white hover:bg-white/10 transition-all"
-            aria-label="Close sidebar"
-          >
-            <X size={16} />
-          </button>
-        </div>
-
-        {/* Sidebar content (without the brand header — already shown above) */}
-        <div className="h-[calc(100%-4rem)] overflow-hidden">
-          <AdminSidebar collapsed={false} onNavClick={onClose} />
-        </div>
+    <div className="fixed inset-0 z-50 lg:hidden" role="dialog" aria-modal="true" aria-label="Admin menu">
+      <div className="absolute inset-0 animate-fade-in bg-ink/50" onClick={onClose} aria-hidden="true" />
+      <aside className="absolute inset-y-2.5 left-2.5 w-[min(280px,calc(100vw-20px))] animate-slide-up rounded-r28 bg-ink p-3 shadow-pop">
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close menu"
+          className="absolute right-3 top-3.5 z-10 grid h-9 w-9 place-items-center rounded-full text-on-dark hover:bg-white/10 hover:text-white"
+        >
+          <X size={18} />
+        </button>
+        <AdminSidebar collapsed={false} onNavClick={onClose} />
       </aside>
-    </>
+    </div>
   );
 }

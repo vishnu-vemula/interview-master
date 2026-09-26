@@ -18,6 +18,8 @@
 
 import { createContext, useContext, useReducer, useEffect, useCallback } from 'react';
 import adminApi, { clearAdminAuth } from '@/lib/admin-axios';
+import { auth, firebaseMode } from '@/lib/firebase';
+import { onAuthStateChanged, sendEmailVerification, signInWithEmailAndPassword, signOut } from 'firebase/auth';
 
 const STORAGE_KEY = 'ai-admin-auth';
 
@@ -85,6 +87,19 @@ export const AdminAuthProvider = ({ children }) => {
 
   // ── Restore admin session from localStorage on mount ──────────
   useEffect(() => {
+    if (firebaseMode) {
+      clearAdminAuth();
+      return onAuthStateChanged(auth, async (firebaseUser) => {
+        if (!firebaseUser?.emailVerified) {
+          dispatch({ type: ACTIONS.LOGOUT });
+          return;
+        }
+        try {
+          const { data } = await adminApi.get('/admin/auth/me');
+          dispatch({ type: ACTIONS.AUTH_SUCCESS, payload: { admin: data.admin, accessToken: null, refreshToken: null } });
+        } catch { dispatch({ type: ACTIONS.LOGOUT }); }
+      });
+    }
     const restore = () => {
       try {
         const stored = localStorage.getItem(STORAGE_KEY);
@@ -111,6 +126,7 @@ export const AdminAuthProvider = ({ children }) => {
 
   // ── Persist admin auth to localStorage on changes ─────────────
   useEffect(() => {
+    if (firebaseMode) return;
     if (state.isAdminAuthenticated && state.admin) {
       localStorage.setItem(STORAGE_KEY, JSON.stringify({
         admin:        state.admin,
@@ -127,14 +143,33 @@ export const AdminAuthProvider = ({ children }) => {
     const handleForceLogout = () => {
       dispatch({ type: ACTIONS.LOGOUT });
     };
+    const handleRefreshed = (e) => {
+      if (e.detail?.accessToken) dispatch({ type: ACTIONS.SET_TOKEN, payload: e.detail.accessToken });
+    };
     window.addEventListener('admin:logout', handleForceLogout);
-    return () => window.removeEventListener('admin:logout', handleForceLogout);
+    window.addEventListener('admin:token-refreshed', handleRefreshed);
+    return () => {
+      window.removeEventListener('admin:logout', handleForceLogout);
+      window.removeEventListener('admin:token-refreshed', handleRefreshed);
+    };
   }, []);
 
   // ─── Actions ──────────────────────────────────────────────────
   const adminLogin = useCallback(async ({ email, password }) => {
-    dispatch({ type: ACTIONS.SET_LOADING, payload: true });
+    // Note: no global SET_LOADING here — isLoading gates route guards during session
+    // restore only; toggling it would unmount the login page mid-request.
     try {
+      if (firebaseMode) {
+        await signInWithEmailAndPassword(auth, email, password);
+        if (!auth.currentUser?.emailVerified) {
+          await sendEmailVerification(auth.currentUser);
+          await signOut(auth);
+          throw new Error('Verify your email using the link we sent, then sign in.');
+        }
+        const { data } = await adminApi.get('/admin/auth/me');
+        dispatch({ type: ACTIONS.AUTH_SUCCESS, payload: { admin: data.admin, accessToken: null, refreshToken: null } });
+        return { success: true, role: data.admin.role };
+      }
       const { data } = await adminApi.post('/admin/auth/login', { email, password });
       dispatch({
         type: ACTIONS.AUTH_SUCCESS,
@@ -146,15 +181,20 @@ export const AdminAuthProvider = ({ children }) => {
       });
       return { success: true, role: data.admin.role };
     } catch (err) {
-      const message = err.response?.data?.message || 'Admin login failed';
+      const message = err.response?.data?.message || err.message || 'Admin login failed';
       dispatch({ type: ACTIONS.AUTH_FAILURE, payload: message });
       return { success: false, message };
     }
   }, []);
 
   const adminLogout = useCallback(async () => {
+    if (firebaseMode) {
+      await signOut(auth);
+      dispatch({ type: ACTIONS.LOGOUT });
+      return;
+    }
     try {
-      await adminApi.post('/admin/auth/logout');
+      await adminApi.post('/admin/auth/logout', null, { _retry: true });
     } catch { /* ignore — logout is local-first */ }
     dispatch({ type: ACTIONS.LOGOUT });
   }, []);

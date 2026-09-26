@@ -1,576 +1,596 @@
 /**
- * pages/admin/AdminSettingsPage.jsx
+ * AdminSettingsPage — platform-wide configuration (GET / PATCH /admin/settings).
  *
- * System Settings Configuration Workspace.
- * Segmented into tabs:
- *  - Tab 1: General (app metadata, maintenance toggle, contacts, socials).
- *  - Tab 2: Security & Keys (expiry dates, secret API tokens, rate throttlers).
- *  - Tab 3: AI Engine (Groq models selection, temperatures, token heights).
- *  - Tab 4: Cloud Storage (Providers routing: local disk, Cloudinary, AWS S3 buckets).
- *  - Tab 5: Feature Flags (Turn on/off system modules like ATS, career coach, scraper).
+ * Sections: General (branding, support contacts, maintenance mode, socials), Security
+ * (session expiry + API rate limit), AI engine (default model parameters), Storage
+ * (read-only: resume files live in env-configured Cloudinary) and Feature flags.
+ * Secrets are never returned by the API and are not editable here.
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import toast from 'react-hot-toast';
 import {
-  Settings, Key, Sparkles, Database, ToggleLeft, Save, Loader2,
-  Globe, Info, Shield, HelpCircle, Link
+  Settings, Shield, Sparkles, Database, ToggleLeft, Save, KeyRound, Github, Twitter, Linkedin,
+  Briefcase, Radar, FileSearch, MessagesSquare, Construction, Lock, Undo2,
 } from 'lucide-react';
 import { getAdminSettings, saveAdminSettings } from '@/services/admin.service';
-import toast from 'react-hot-toast';
+import { useAdminAuth } from '@/context';
+import {
+  Alert, Button, Card, ErrorState, Field, Input, PageHeader, Pill, Segmented, Select, Skeleton, Switch,
+} from '@/components/ui';
+import { cn, formatDateTime, getErrorMessage, timeAgo } from '@/utils';
 
-export default function AdminSettingsPage() {
-  const [activeTab, setActiveTab] = useState('general'); // 'general' | 'security' | 'ai' | 'storage' | 'features'
+// Same fallbacks the page has always used when a stored document is missing a key.
+const DEFAULTS = {
+  general: {
+    appName: 'Rehearsly',
+    logo: '',
+    theme: 'dark',
+    maintenanceMode: false,
+    supportEmail: 'support@interviewmaster.com',
+    supportPhone: '+1 (555) 019-2834',
+    socialLinks: { github: '', twitter: '', linkedin: '' },
+  },
+  security: {
+    jwtExpiry: '7d',
+    apiKeys: { groq: '', stripe: '', adzunaId: '', adzunaKey: '' },
+    rateLimits: { windowMs: 15 * 60 * 1000, maxRequests: 100 },
+  },
+  ai: { model: 'llama-3.3-70b-versatile', temperature: 0.5, maxTokens: 1024 },
+  storage: {
+    provider: 'local',
+    cloudinary: { cloudName: '', apiKey: '', apiSecret: '' },
+    aws: { bucket: '', region: '', accessKey: '', secretKey: '' },
+  },
+  featureFlags: { enableJobs: true, enableScraper: true, enableATS: true, enableCoach: true },
+};
 
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving]   = useState(false);
-
-  // Unified Form settings state
-  const [form, setForm] = useState({
+/** Deep-merge the server document over DEFAULTS so every field the form reads exists. */
+function normalize(s) {
+  const src = s || {};
+  return {
+    ...src,
     general: {
-      appName: 'InterviewMaster',
-      logo: '',
-      theme: 'dark',
-      maintenanceMode: false,
-      supportEmail: 'support@interviewmaster.com',
-      supportPhone: '+1 (555) 019-2834',
-      socialLinks: { github: '', twitter: '', linkedin: '' },
+      ...DEFAULTS.general,
+      ...src.general,
+      socialLinks: { ...DEFAULTS.general.socialLinks, ...src.general?.socialLinks },
     },
     security: {
-      jwtExpiry: '7d',
-      apiKeys: { groq: '', stripe: '', adzunaId: '', adzunaKey: '' },
-      rateLimits: { windowMs: 15 * 60 * 1000, maxRequests: 100 },
+      ...DEFAULTS.security,
+      ...src.security,
+      apiKeys: { ...DEFAULTS.security.apiKeys, ...src.security?.apiKeys },
+      rateLimits: { ...DEFAULTS.security.rateLimits, ...src.security?.rateLimits },
     },
-    ai: {
-      model: 'llama-3.3-70b-versatile',
-      temperature: 0.5,
-      maxTokens: 1024,
-    },
+    ai: { ...DEFAULTS.ai, ...src.ai },
     storage: {
-      provider: 'local',
-      cloudinary: { cloudName: '', apiKey: '', apiSecret: '' },
-      aws: { bucket: '', region: '', accessKey: '', secretKey: '' },
+      ...DEFAULTS.storage,
+      ...src.storage,
+      cloudinary: { ...DEFAULTS.storage.cloudinary, ...src.storage?.cloudinary },
+      aws: { ...DEFAULTS.storage.aws, ...src.storage?.aws },
     },
+    featureFlags: { ...DEFAULTS.featureFlags, ...src.featureFlags },
+  };
+}
+
+/** Flat, string-friendly editing model (number inputs keep what the admin typed). */
+function toDraft(s) {
+  return {
+    appName: s.general.appName ?? '',
+    logo: s.general.logo ?? '',
+    theme: s.general.theme || 'dark',
+    maintenanceMode: !!s.general.maintenanceMode,
+    supportEmail: s.general.supportEmail ?? '',
+    supportPhone: s.general.supportPhone ?? '',
+    github: s.general.socialLinks.github ?? '',
+    twitter: s.general.socialLinks.twitter ?? '',
+    linkedin: s.general.socialLinks.linkedin ?? '',
+    jwtExpiry: s.security.jwtExpiry ?? '',
+    windowMinutes: String(Number(s.security.rateLimits.windowMs || 0) / 60000),
+    maxRequests: String(s.security.rateLimits.maxRequests ?? ''),
+    model: s.ai.model ?? '',
+    temperature: Number(s.ai.temperature ?? 0.5),
+    maxTokens: String(s.ai.maxTokens ?? ''),
+    enableJobs: !!s.featureFlags.enableJobs,
+    enableScraper: !!s.featureFlags.enableScraper,
+    enableATS: !!s.featureFlags.enableATS,
+    enableCoach: !!s.featureFlags.enableCoach,
+  };
+}
+
+/** Rebuild the full settings document (same shape the page has always PATCHed). */
+function toPayload(s, d) {
+  return {
+    ...s,
+    general: {
+      ...s.general,
+      appName: d.appName.trim(),
+      logo: d.logo.trim(),
+      theme: d.theme,
+      maintenanceMode: d.maintenanceMode,
+      supportEmail: d.supportEmail.trim(),
+      supportPhone: d.supportPhone.trim(),
+      socialLinks: { github: d.github.trim(), twitter: d.twitter.trim(), linkedin: d.linkedin.trim() },
+    },
+    security: {
+      ...s.security,
+      jwtExpiry: d.jwtExpiry.trim(),
+      rateLimits: {
+        windowMs: Math.round(Number(d.windowMinutes) * 60 * 1000),
+        maxRequests: parseInt(d.maxRequests, 10),
+      },
+    },
+    ai: { ...s.ai, model: d.model.trim(), temperature: d.temperature, maxTokens: parseInt(d.maxTokens, 10) },
     featureFlags: {
-      enableJobs: true,
-      enableScraper: true,
-      enableATS: true,
-      enableCoach: true,
+      enableJobs: d.enableJobs,
+      enableScraper: d.enableScraper,
+      enableATS: d.enableATS,
+      enableCoach: d.enableCoach,
     },
+  };
+}
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// Duration grammar accepted by jsonwebtoken's `expiresIn` (the `ms` package): "7d", "12h", "30 minutes", "3600".
+const DURATION_RE = /^\d+(\.\d+)?\s*(ms|msecs?|milliseconds?|s|secs?|seconds?|m|mins?|minutes?|h|hrs?|hours?|d|days?|w|weeks?|y|yrs?|years?)?$/i;
+const isHttpUrl = (v) => {
+  try {
+    const u = new URL(v);
+    return u.protocol === 'http:' || u.protocol === 'https:';
+  } catch {
+    return false;
+  }
+};
+const isPositiveInt = (v) => /^\d+$/.test(String(v).trim()) && parseInt(v, 10) > 0;
+
+function validate(d) {
+  const e = {};
+  if (!d.appName.trim()) e.appName = 'Enter the platform name.';
+  if (d.logo.trim() && !d.logo.trim().startsWith('/') && !isHttpUrl(d.logo.trim())) e.logo = 'Use a full http(s) URL or a path starting with “/”.';
+  if (!d.supportEmail.trim()) e.supportEmail = 'Enter a support email.';
+  else if (!EMAIL_RE.test(d.supportEmail.trim())) e.supportEmail = 'Enter a valid email address.';
+  ['github', 'twitter', 'linkedin'].forEach((k) => {
+    if (d[k].trim() && !isHttpUrl(d[k].trim())) e[k] = 'Use a full URL starting with https://';
+  });
+  if (!d.jwtExpiry.trim()) e.jwtExpiry = 'Enter a token lifetime.';
+  else if (!DURATION_RE.test(d.jwtExpiry.trim())) e.jwtExpiry = 'Use a duration like 7d, 12h or 30m.';
+  const win = Number(d.windowMinutes);
+  if (String(d.windowMinutes).trim() === '' || !Number.isFinite(win) || win <= 0) e.windowMinutes = 'Enter a window longer than 0 minutes.';
+  if (!isPositiveInt(d.maxRequests)) e.maxRequests = 'Enter a whole number of 1 or more.';
+  if (!d.model.trim()) e.model = 'Enter a model name.';
+  if (!isPositiveInt(d.maxTokens)) e.maxTokens = 'Enter a whole number of 1 or more.';
+  return e;
+}
+
+const SECTIONS = [
+  { id: 'general', label: 'General', sub: 'Brand, support & maintenance', icon: Settings, fields: ['appName', 'logo', 'theme', 'maintenanceMode', 'supportEmail', 'supportPhone', 'github', 'twitter', 'linkedin'] },
+  { id: 'security', label: 'Security', sub: 'Sessions & rate limits', icon: Shield, fields: ['jwtExpiry', 'windowMinutes', 'maxRequests'] },
+  { id: 'ai', label: 'AI engine', sub: 'Model defaults', icon: Sparkles, fields: ['model', 'temperature', 'maxTokens'] },
+  { id: 'storage', label: 'Storage', sub: 'Resume files', icon: Database, fields: [] },
+  { id: 'features', label: 'Feature flags', sub: 'Candidate modules', icon: ToggleLeft, fields: ['enableJobs', 'enableScraper', 'enableATS', 'enableCoach'] },
+];
+
+const FLAGS = [
+  { key: 'enableJobs', icon: Briefcase, title: 'Jobs module', body: 'Job search, applications and matching against posted listings.' },
+  { key: 'enableScraper', icon: Radar, title: 'Adzuna job scraper', body: 'Background sync that imports Adzuna listings on the scraper schedule.' },
+  { key: 'enableATS', icon: FileSearch, title: 'ATS evaluator', body: 'Lets candidates score their resume against a job description.' },
+  { key: 'enableCoach', icon: MessagesSquare, title: 'Career coach', body: 'AI feedback and career-advice conversations after practice.' },
+];
+
+const THEME_LABELS = { dark: 'Dark', light: 'Light', custom: 'Custom' };
+
+function SectionHeading({ icon: Icon, title, description }) {
+  return (
+    <div className="mb-6 flex items-start gap-3">
+      <span className="grid h-10 w-10 flex-shrink-0 place-items-center rounded-r14 bg-stone-2 text-ink">
+        <Icon size={18} aria-hidden="true" />
+      </span>
+      <div className="min-w-0">
+        <h2 className="text-[17px] font-medium tracking-tight1">{title}</h2>
+        {description && <p className="mt-0.5 text-[13.5px] leading-relaxed text-muted">{description}</p>}
+      </div>
+    </div>
+  );
+}
+
+function ToggleRow({ id, icon: Icon, title, body, checked, onChange, tone = 'default', disabled }) {
+  return (
+    <div className="flex items-center gap-4 py-4 first:pt-0 last:pb-0">
+      {Icon && (
+        <span className={cn('hidden h-9 w-9 flex-shrink-0 place-items-center rounded-r9 sm:grid', checked ? (tone === 'danger' ? 'bg-coral-bg text-coral' : 'bg-lime-soft text-lime-ok') : 'bg-stone-2 text-muted')}>
+          <Icon size={16} aria-hidden="true" />
+        </span>
+      )}
+      <div className="min-w-0 flex-1">
+        <label htmlFor={id} className="flex cursor-pointer flex-wrap items-center gap-2 text-[14.5px] font-medium">
+          {title}
+          {checked
+            ? <Pill tone={tone === 'danger' ? 'coral' : 'ok'} mono>On</Pill>
+            : <Pill tone="stone" mono>Off</Pill>}
+        </label>
+        <p className="mt-0.5 text-[13px] leading-relaxed text-muted">{body}</p>
+      </div>
+      <Switch id={id} checked={checked} onChange={onChange} label={title} disabled={disabled} />
+    </div>
+  );
+}
+
+function SettingsSkeleton() {
+  return (
+    <div className="grid grid-cols-1 gap-6 lg:grid-cols-[250px_minmax(0,1fr)]" role="status" aria-label="Loading settings">
+      <Card className="hidden space-y-2 p-2 lg:block">
+        {SECTIONS.map((s) => <Skeleton key={s.id} className="h-14 rounded-r14" />)}
+      </Card>
+      <Skeleton className="h-11 w-full rounded-full lg:hidden" />
+      <Card className="p-5 sm:p-6">
+        <div className="mb-6 flex items-center gap-3">
+          <Skeleton className="h-10 w-10 rounded-r14" />
+          <div className="flex-1 space-y-2"><Skeleton className="h-4 w-40" /><Skeleton className="h-3 w-64 max-w-full" /></div>
+        </div>
+        <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+          {[0, 1, 2, 3, 4, 5].map((i) => (
+            <div key={i} className="space-y-2"><Skeleton className="h-3.5 w-28" /><Skeleton className="h-12 rounded-r14" /></div>
+          ))}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+export default function AdminSettingsPage() {
+  const queryClient = useQueryClient();
+  const { hasPermission } = useAdminAuth();
+  const canEdit = hasPermission('update:settings');
+
+  const [activeTab, setActiveTab] = useState('general'); // 'general' | 'security' | 'ai' | 'storage' | 'features'
+  const [draft, setDraft] = useState(null);
+  const [errors, setErrors] = useState({});
+  const [saving, setSaving] = useState(false);
+  const [serverError, setServerError] = useState('');
+
+  const { data, isLoading, isError, error, refetch } = useQuery({
+    queryKey: ['admin-settings'],
+    queryFn: getAdminSettings,
   });
 
-  // Fetch settings
-  const fetchSettings = useCallback(async () => {
-    setLoading(true);
-    try {
-      const s = await getAdminSettings();
-      if (s) {
-        setForm(s);
-      }
-    } catch {
-      toast.error('Failed to load system settings configurations.');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const settings = useMemo(() => (data ? normalize(data) : null), [data]);
+  const baseline = useMemo(() => (settings ? toDraft(settings) : null), [settings]);
 
+  // (Re)seed the form whenever a fresh server copy arrives (initial load / after save).
   useEffect(() => {
-    fetchSettings();
-  }, [fetchSettings]);
+    if (baseline) {
+      setDraft(baseline);
+      setErrors({});
+    }
+  }, [baseline]);
 
-  // Submit Handler
+  const dirty = !!draft && !!baseline && JSON.stringify(draft) !== JSON.stringify(baseline);
+
+  const set = (key) => (value) => {
+    setDraft((d) => ({ ...d, [key]: value }));
+    if (errors[key]) setErrors((e) => { const next = { ...e }; delete next[key]; return next; });
+    setServerError('');
+  };
+  const bind = (key) => ({ value: draft?.[key] ?? '', onChange: (e) => set(key)(e.target.value) });
+
+  const errorCount = (section) => section.fields.filter((f) => errors[f]).length;
+
   const handleSave = async (e) => {
     e.preventDefault();
+    if (!canEdit) return;
+    const v = validate(draft);
+    setErrors(v);
+    const keys = Object.keys(v);
+    if (keys.length) {
+      const first = SECTIONS.find((s) => s.fields.some((f) => v[f]));
+      if (first) setActiveTab(first.id);
+      setTimeout(() => document.getElementById(`setting-${first?.fields.find((f) => v[f])}`)?.focus(), 60);
+      return;
+    }
     setSaving(true);
+    setServerError('');
     try {
-      await saveAdminSettings(form);
-      toast.success('System settings saved successfully.');
-    } catch {
-      toast.error('Error saving settings changes.');
+      const saved = await saveAdminSettings(toPayload(settings, draft));
+      if (saved) queryClient.setQueryData(['admin-settings'], saved);
+      else await refetch();
+      toast.success('Platform settings saved.');
+    } catch (err) {
+      const msg = getErrorMessage(err, 'Couldn’t save the settings. Please try again.');
+      setServerError(msg);
+      toast.error('Settings weren’t saved.');
     } finally {
       setSaving(false);
     }
   };
 
+  const discard = () => {
+    if (baseline) setDraft(baseline);
+    setErrors({});
+    setServerError('');
+  };
+
+  const themeOptions = ['dark', 'light'];
+  if (draft?.theme && !themeOptions.includes(draft.theme)) themeOptions.push(draft.theme);
+
   return (
-    <div className="space-y-6 max-w-[1600px] mx-auto pb-8 relative">
+    <div className="space-y-8">
+      <PageHeader
+        eyebrow="Admin · System"
+        title="Platform settings"
+        description="Branding, support contacts, session security, AI defaults and the modules candidates can use."
+        actions={
+          data?.updatedAt ? (
+            <span className="mono-label text-muted" title={formatDateTime(data.updatedAt)}>
+              Last saved {timeAgo(data.updatedAt)}
+            </span>
+          ) : null
+        }
+      />
 
-      {/* ── Header ───────────────────────────────────────────── */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-white tracking-tight">System Settings</h1>
-          <p className="text-slate-400 text-sm mt-0.5">Manage global configurations, API integrations, LLM engines, and toggle module visibilities</p>
-        </div>
-      </div>
-
-      {loading ? (
-        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-          <div className="card p-4 space-y-2">
-            {Array.from({ length: 5 }).map((_, i) => (
-              <div key={i} className="h-10 bg-white/5 rounded animate-pulse" />
-            ))}
-          </div>
-          <div className="lg:col-span-3 card p-6 h-96 bg-white/5 animate-pulse" />
-        </div>
+      {isLoading || (settings && !draft) ? (
+        <SettingsSkeleton />
+      ) : isError || !settings ? (
+        <ErrorState
+          title="Couldn’t load platform settings"
+          description={getErrorMessage(error, 'The settings service did not respond.')}
+          onRetry={refetch}
+        />
       ) : (
-        <form onSubmit={handleSave} className="grid grid-cols-1 lg:grid-cols-4 gap-6 items-start">
-          
-          {/* ── Sidebar Tabs selector ──────────────────────────────── */}
-          <div className="space-y-2 lg:sticky lg:top-4">
-            <button
-              type="button"
-              onClick={() => setActiveTab('general')}
-              className={`w-full text-left px-4 py-3 rounded-xl border flex items-center gap-2.5 transition-all text-xs font-semibold
-                ${activeTab === 'general'
-                  ? 'bg-brand-600/10 border-brand-500/30 text-white shadow-lg'
-                  : 'bg-[#0f0f22]/30 border-white/[0.06] text-slate-400 hover:border-white/10 hover:text-slate-200'}`}
-            >
-              <Settings size={14} /> General Settings
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveTab('security')}
-              className={`w-full text-left px-4 py-3 rounded-xl border flex items-center gap-2.5 transition-all text-xs font-semibold
-                ${activeTab === 'security'
-                  ? 'bg-brand-600/10 border-brand-500/30 text-white shadow-lg'
-                  : 'bg-[#0f0f22]/30 border-white/[0.06] text-slate-400 hover:border-white/10 hover:text-slate-200'}`}
-            >
-              <Key size={14} /> Security & API Keys
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveTab('ai')}
-              className={`w-full text-left px-4 py-3 rounded-xl border flex items-center gap-2.5 transition-all text-xs font-semibold
-                ${activeTab === 'ai'
-                  ? 'bg-brand-600/10 border-brand-500/30 text-white shadow-lg'
-                  : 'bg-[#0f0f22]/30 border-white/[0.06] text-slate-400 hover:border-white/10 hover:text-slate-200'}`}
-            >
-              <Sparkles size={14} /> AI Parameters
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveTab('storage')}
-              className={`w-full text-left px-4 py-3 rounded-xl border flex items-center gap-2.5 transition-all text-xs font-semibold
-                ${activeTab === 'storage'
-                  ? 'bg-brand-600/10 border-brand-500/30 text-white shadow-lg'
-                  : 'bg-[#0f0f22]/30 border-white/[0.06] text-slate-400 hover:border-white/10 hover:text-slate-200'}`}
-            >
-              <Database size={14} /> Cloud Storage
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveTab('features')}
-              className={`w-full text-left px-4 py-3 rounded-xl border flex items-center gap-2.5 transition-all text-xs font-semibold
-                ${activeTab === 'features'
-                  ? 'bg-brand-600/10 border-brand-500/30 text-white shadow-lg'
-                  : 'bg-[#0f0f22]/30 border-white/[0.06] text-slate-400 hover:border-white/10 hover:text-slate-200'}`}
-            >
-              <ToggleLeft size={14} /> Feature Flags
-            </button>
+        <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[250px_minmax(0,1fr)]">
+          {/* Section navigation — rail on desktop, segmented control on small screens */}
+          <nav aria-label="Settings sections" className="lg:sticky lg:top-[92px]">
+            <Segmented
+              size="sm"
+              className="lg:hidden"
+              ariaLabel="Settings sections"
+              value={activeTab}
+              onChange={setActiveTab}
+              options={SECTIONS.map((s) => ({ value: s.id, label: s.label, icon: s.icon, count: errorCount(s) || undefined }))}
+            />
+            <Card className="hidden p-2 lg:block">
+              <ul className="space-y-1">
+                {SECTIONS.map((s) => {
+                  const active = activeTab === s.id;
+                  const count = errorCount(s);
+                  return (
+                    <li key={s.id}>
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab(s.id)}
+                        aria-current={active ? 'page' : undefined}
+                        className={cn(
+                          'flex w-full items-center gap-3 rounded-r14 px-3 py-2.5 text-left transition-colors',
+                          active ? 'bg-ink text-white' : 'text-ink hover:bg-paper',
+                        )}
+                      >
+                        <span className={cn('grid h-8 w-8 flex-shrink-0 place-items-center rounded-r9', active ? 'bg-ink-3 text-lime' : 'bg-stone-2 text-muted')}>
+                          <s.icon size={15} aria-hidden="true" />
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-[14px] font-medium">{s.label}</span>
+                          <span className={cn('block truncate text-[12px]', active ? 'text-on-dark' : 'text-muted')}>{s.sub}</span>
+                        </span>
+                        {count > 0 && (
+                          <span className="grid h-5 min-w-[20px] place-items-center rounded-full bg-coral px-1.5 font-mono text-[10px] text-white" aria-label={`${count} field${count > 1 ? 's' : ''} need attention`}>
+                            {count}
+                          </span>
+                        )}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </Card>
+          </nav>
 
-            {/* Save Button */}
-            <div className="pt-4 border-t border-white/[0.06] mt-4">
-              <button
-                type="submit"
-                disabled={saving}
-                className="w-full btn-primary py-2.5 flex items-center justify-center gap-2 text-xs font-semibold"
-              >
-                {saving ? (
-                  <>
-                    <Loader2 size={14} className="animate-spin" />
-                    Saving Settings...
-                  </>
-                ) : (
-                  <>
-                    <Save size={14} />
-                    Save Configurations
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
-
-          {/* ── Active Tab Workspace Panel ───────────────────────── */}
-          <div className="lg:col-span-3 card p-6 bg-[#0f0f22]/30 border-white/[0.06] space-y-6">
-            
-            {/* General Settings */}
-            {activeTab === 'general' && (
-              <div className="space-y-4">
-                <h3 className="text-white text-sm font-semibold flex items-center gap-2 border-b border-white/10 pb-2">
-                  <Settings size={16} className="text-slate-400" />
-                  General Application Configurations
-                </h3>
-                
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className="form-label">Platform Name</label>
-                    <input
-                      className="form-input"
-                      value={form.general.appName}
-                      onChange={(e) => setForm(p => ({ ...p, general: { ...p.general, appName: e.target.value } }))}
-                      required
-                    />
-                  </div>
-
-                  <div>
-                    <label className="form-label">Logo Asset URL</label>
-                    <input
-                      className="form-input"
-                      value={form.general.logo}
-                      onChange={(e) => setForm(p => ({ ...p, general: { ...p.general, logo: e.target.value } }))}
-                      placeholder="e.g. https://logo.domain.com/logo.png"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="form-label">System Active Theme</label>
-                    <select
-                      className="form-select"
-                      value={form.general.theme}
-                      onChange={(e) => setForm(p => ({ ...p, general: { ...p.general, theme: e.target.value } }))}
-                    >
-                      <option value="dark">Standard Dark Mode</option>
-                      <option value="light">Standard Light Mode</option>
-                    </select>
-                  </div>
-
-                  {/* Maintenance Mode */}
-                  <div className="flex items-center pt-6">
-                    <label className="flex items-center gap-2.5 cursor-pointer select-none">
-                      <input
-                        type="checkbox"
-                        checked={form.general.maintenanceMode}
-                        onChange={(e) => setForm(p => ({ ...p, general: { ...p.general, maintenanceMode: e.target.checked } }))}
-                        className="w-4 h-4 bg-surface-card border-slate-600 rounded text-brand-600 focus:ring-brand-500"
-                      />
-                      <span className="text-slate-300 text-xs font-semibold">Enable Maintenance Mode (Halts candidate portal)</span>
-                    </label>
-                  </div>
-
-                  <div>
-                    <label className="form-label">Support Email Address</label>
-                    <input
-                      type="email"
-                      className="form-input"
-                      value={form.general.supportEmail}
-                      onChange={(e) => setForm(p => ({ ...p, general: { ...p.general, supportEmail: e.target.value } }))}
-                      required
-                    />
-                  </div>
-
-                  <div>
-                    <label className="form-label">Support Help Phone</label>
-                    <input
-                      className="form-input"
-                      value={form.general.supportPhone}
-                      onChange={(e) => setForm(p => ({ ...p, general: { ...p.general, supportPhone: e.target.value } }))}
-                    />
-                  </div>
-                </div>
-
-                <div className="pt-3 border-t border-white/[0.04] space-y-3">
-                  <h4 className="text-white text-xs font-semibold flex items-center gap-1.5"><Link size={13} className="text-slate-400" /> Social Profile Integrations</h4>
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                    <div>
-                      <label className="form-label">GitHub</label>
-                      <input
-                        className="form-input text-xs"
-                        value={form.general.socialLinks.github}
-                        onChange={(e) => setForm(p => ({ ...p, general: { ...p.general, socialLinks: { ...p.general.socialLinks, github: e.target.value } } }))}
-                        placeholder="https://github.com/..."
-                      />
-                    </div>
-                    <div>
-                      <label className="form-label">Twitter</label>
-                      <input
-                        className="form-input text-xs"
-                        value={form.general.socialLinks.twitter}
-                        onChange={(e) => setForm(p => ({ ...p, general: { ...p.general, socialLinks: { ...p.general.socialLinks, twitter: e.target.value } } }))}
-                        placeholder="https://twitter.com/..."
-                      />
-                    </div>
-                    <div>
-                      <label className="form-label">LinkedIn</label>
-                      <input
-                        className="form-input text-xs"
-                        value={form.general.socialLinks.linkedin}
-                        onChange={(e) => setForm(p => ({ ...p, general: { ...p.general, socialLinks: { ...p.general.socialLinks, linkedin: e.target.value } } }))}
-                        placeholder="https://linkedin.com/in/..."
-                      />
-                    </div>
-                  </div>
-                </div>
-              </div>
+          <form id="admin-settings-form" onSubmit={handleSave} noValidate className="min-w-0 space-y-4">
+            {!canEdit && (
+              <Alert tone="info" icon={Lock} title="View-only access">
+                Your admin role can view platform settings but not change them.
+              </Alert>
             )}
 
-            {/* Security Settings */}
-            {activeTab === 'security' && (
-              <div className="space-y-4">
-                <h3 className="text-white text-sm font-semibold flex items-center gap-2 border-b border-white/10 pb-2">
-                  <Shield size={16} className="text-slate-400" />
-                  Security Protocols & Integration Keys
-                </h3>
+            <fieldset disabled={!canEdit || saving} className="min-w-0">
+              {activeTab === 'general' && (
+                <Card className="p-5 sm:p-6">
+                  <SectionHeading icon={Settings} title="General" description="How the platform identifies itself and how candidates reach support." />
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className="form-label">JWT Token Expiry (Days/Hours)</label>
-                    <input
-                      className="form-input"
-                      value={form.security.jwtExpiry}
-                      onChange={(e) => setForm(p => ({ ...p, security: { ...p.security, jwtExpiry: e.target.value } }))}
-                      required
+                  <div className={cn('mb-6 rounded-r18 border px-4 py-4', draft.maintenanceMode ? 'border-coral/25 bg-coral-soft' : 'border-line-2 bg-paper')}>
+                    <ToggleRow
+                      id="setting-maintenanceMode"
+                      icon={Construction}
+                      tone="danger"
+                      title="Maintenance mode"
+                      body="Halts the candidate portal while the platform is being worked on."
+                      checked={draft.maintenanceMode}
+                      onChange={set('maintenanceMode')}
                     />
                   </div>
 
-                  <div>
-                    <label className="form-label">Groq API Key (AI Client Access)</label>
-                    <input
-                      type="password"
-                      className="form-input"
-                      value={form.security.apiKeys.groq}
-                      onChange={(e) => setForm(p => ({ ...p, security: { ...p.security, apiKeys: { ...p.security.apiKeys, groq: e.target.value } } }))}
-                      placeholder="gsk_..."
-                    />
+                  <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+                    <Field label="Platform name" required error={errors.appName}>
+                      <Input id="setting-appName" {...bind('appName')} autoComplete="off" />
+                    </Field>
+                    <Field label="Logo asset URL" error={errors.logo} hint="Absolute URL or a path served by the web app.">
+                      <Input id="setting-logo" {...bind('logo')} placeholder="https://cdn.example.com/logo.svg" inputMode="url" />
+                    </Field>
+                    <Field label="Support email" required error={errors.supportEmail}>
+                      <Input id="setting-supportEmail" type="email" {...bind('supportEmail')} autoComplete="off" />
+                    </Field>
+                    <Field label="Support phone" error={errors.supportPhone}>
+                      <Input id="setting-supportPhone" type="tel" {...bind('supportPhone')} />
+                    </Field>
+                    <Field label="Theme" hint="Stored platform theme preference.">
+                      <Select id="setting-theme" {...bind('theme')}>
+                        {themeOptions.map((t) => <option key={t} value={t}>{THEME_LABELS[t] || t}</option>)}
+                      </Select>
+                    </Field>
                   </div>
 
-                  <div>
-                    <label className="form-label">Stripe Private Key (Payment Gateway)</label>
-                    <input
-                      type="password"
-                      className="form-input"
-                      value={form.security.apiKeys.stripe}
-                      onChange={(e) => setForm(p => ({ ...p, security: { ...p.security, apiKeys: { ...p.security.apiKeys, stripe: e.target.value } } }))}
-                      placeholder="sk_test_..."
-                    />
+                  <p className="divider-label mb-5 mt-8">Social profiles</p>
+                  <div className="grid grid-cols-1 gap-5 md:grid-cols-3">
+                    <Field label={<span className="inline-flex items-center gap-1.5"><Github size={14} aria-hidden="true" /> GitHub</span>} error={errors.github}>
+                      <Input id="setting-github" {...bind('github')} placeholder="https://github.com/…" inputMode="url" />
+                    </Field>
+                    <Field label={<span className="inline-flex items-center gap-1.5"><Twitter size={14} aria-hidden="true" /> Twitter / X</span>} error={errors.twitter}>
+                      <Input id="setting-twitter" {...bind('twitter')} placeholder="https://twitter.com/…" inputMode="url" />
+                    </Field>
+                    <Field label={<span className="inline-flex items-center gap-1.5"><Linkedin size={14} aria-hidden="true" /> LinkedIn</span>} error={errors.linkedin}>
+                      <Input id="setting-linkedin" {...bind('linkedin')} placeholder="https://linkedin.com/company/…" inputMode="url" />
+                    </Field>
+                  </div>
+                </Card>
+              )}
+
+              {activeTab === 'security' && (
+                <Card className="p-5 sm:p-6">
+                  <SectionHeading icon={Shield} title="Security" description="Session lifetime and the API request throttle." />
+
+                  <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+                    <Field label="JWT token expiry" required error={errors.jwtExpiry} hint="Duration such as 7d, 12h or 30m.">
+                      <Input id="setting-jwtExpiry" {...bind('jwtExpiry')} className="font-mono" autoComplete="off" />
+                    </Field>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="form-label">Adzuna App ID</label>
-                      <input
-                        className="form-input text-xs"
-                        value={form.security.apiKeys.adzunaId}
-                        onChange={(e) => setForm(p => ({ ...p, security: { ...p.security, apiKeys: { ...p.security.apiKeys, adzunaId: e.target.value } } }))}
-                      />
+                  <p className="divider-label mb-5 mt-8">API rate limit</p>
+                  <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+                    <Field label="Window (minutes)" required error={errors.windowMinutes}>
+                      <Input id="setting-windowMinutes" type="number" min="1" step="1" inputMode="numeric" {...bind('windowMinutes')} />
+                    </Field>
+                    <Field label="Max requests per window" required error={errors.maxRequests}>
+                      <Input id="setting-maxRequests" type="number" min="1" step="1" inputMode="numeric" {...bind('maxRequests')} />
+                    </Field>
+                  </div>
+                  {!errors.windowMinutes && !errors.maxRequests && Number(draft.windowMinutes) > 0 && isPositiveInt(draft.maxRequests) && (
+                    <p className="mt-3 text-[13px] text-muted">
+                      Each client may make up to <span className="font-medium text-ink tabular">{parseInt(draft.maxRequests, 10)}</span> requests every{' '}
+                      <span className="font-medium text-ink tabular">{Number(draft.windowMinutes)}</span> minute{Number(draft.windowMinutes) === 1 ? '' : 's'}.
+                    </p>
+                  )}
+
+                  <Alert tone="info" icon={KeyRound} className="mt-8" title="Credentials live on the server">
+                    PayU, AI and job-provider credentials are managed through server environment variables. They are never shown here.
+                  </Alert>
+                </Card>
+              )}
+
+              {activeTab === 'ai' && (
+                <Card className="p-5 sm:p-6">
+                  <SectionHeading icon={Sparkles} title="AI engine" description="Default Groq model parameters for generated questions and feedback." />
+
+                  <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+                    <Field label="Default model" required error={errors.model} hint="Groq model identifier.">
+                      <Input id="setting-model" {...bind('model')} className="font-mono text-[14px]" autoComplete="off" spellCheck={false} />
+                    </Field>
+                    <Field label="Max completion tokens" required error={errors.maxTokens}>
+                      <Input id="setting-maxTokens" type="number" min="1" step="1" inputMode="numeric" {...bind('maxTokens')} />
+                    </Field>
+                  </div>
+
+                  <div className="mt-6 rounded-r18 border border-line-2 bg-paper px-4 py-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <label htmlFor="setting-temperature" className="text-[13.5px] font-medium">Temperature</label>
+                      <span className="rounded-full bg-ink px-2.5 py-1 font-mono text-[12px] text-lime tabular">{Number(draft.temperature).toFixed(2)}</span>
                     </div>
-                    <div>
-                      <label className="form-label">Adzuna Key</label>
-                      <input
-                        type="password"
-                        className="form-input text-xs"
-                        value={form.security.apiKeys.adzunaKey}
-                        onChange={(e) => setForm(p => ({ ...p, security: { ...p.security, apiKeys: { ...p.security.apiKeys, adzunaKey: e.target.value } } }))}
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="form-label">API Throttler window (Minutes)</label>
                     <input
-                      type="number"
-                      className="form-input"
-                      value={form.security.rateLimits.windowMs / 60 / 1000}
-                      onChange={(e) => setForm(p => ({ ...p, security: { ...p.security, rateLimits: { ...p.security.rateLimits, windowMs: (parseInt(e.target.value) || 15) * 60 * 1000 } } }))}
-                      required
-                    />
-                  </div>
-
-                  <div>
-                    <label className="form-label">Max Requests per Window</label>
-                    <input
-                      type="number"
-                      className="form-input"
-                      value={form.security.rateLimits.maxRequests}
-                      onChange={(e) => setForm(p => ({ ...p, security: { ...p.security, rateLimits: { ...p.security.rateLimits, maxRequests: parseInt(e.target.value) || 100 } } }))}
-                      required
-                    />
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* AI Settings */}
-            {activeTab === 'ai' && (
-              <div className="space-y-4">
-                <h3 className="text-white text-sm font-semibold flex items-center gap-2 border-b border-white/10 pb-2">
-                  <Sparkles size={16} className="text-slate-400" />
-                  AI Models & Hyperparameter Presets
-                </h3>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className="form-label">Default LLM Model Name</label>
-                    <input
-                      className="form-input font-mono text-xs"
-                      value={form.ai.model}
-                      onChange={(e) => setForm(p => ({ ...p, ai: { ...p.ai, model: e.target.value } }))}
-                      required
-                    />
-                  </div>
-
-                  <div>
-                    <label className="form-label">LLM Temperature ({form.ai.temperature})</label>
-                    <input
+                      id="setting-temperature"
                       type="range"
                       min="0"
-                      max="2.0"
+                      max="2"
                       step="0.05"
-                      className="w-full h-1.5 bg-white/5 rounded-lg appearance-none cursor-pointer mt-3"
-                      value={form.ai.temperature}
-                      onChange={(e) => setForm(p => ({ ...p, ai: { ...p.ai, temperature: parseFloat(e.target.value) } }))}
+                      value={draft.temperature}
+                      onChange={(e) => set('temperature')(parseFloat(e.target.value))}
+                      className="mt-4 h-2 w-full cursor-pointer accent-ink disabled:cursor-not-allowed"
+                      aria-describedby="setting-temperature-scale"
                     />
+                    <div id="setting-temperature-scale" className="mt-2 flex justify-between font-mono text-[10.5px] uppercase tracking-mono text-faint">
+                      <span>0 · Precise</span><span>1 · Balanced</span><span>2 · Creative</span>
+                    </div>
                   </div>
+                </Card>
+              )}
 
-                  <div>
-                    <label className="form-label">LLM Max Completion Tokens</label>
-                    <input
-                      type="number"
-                      className="form-input"
-                      value={form.ai.maxTokens}
-                      onChange={(e) => setForm(p => ({ ...p, ai: { ...p.ai, maxTokens: parseInt(e.target.value) || 1024 } }))}
-                      required
-                    />
+              {activeTab === 'storage' && (
+                <Card className="p-5 sm:p-6">
+                  <SectionHeading icon={Database} title="Storage" description="Where uploaded resumes are kept." />
+                  <div className="rounded-r18 border border-line-2 bg-paper px-4 py-4">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-[14.5px] font-medium">Resume storage</span>
+                      <Pill tone="blue" mono>Private Cloudinary</Pill>
+                    </div>
+                    <p className="mt-2 text-[13.5px] leading-relaxed text-muted-strong">
+                      Resumes use private Cloudinary storage. Configure these variables on the API server:
+                    </p>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {['CLOUDINARY_CLOUD_NAME', 'CLOUDINARY_API_KEY', 'CLOUDINARY_API_SECRET'].map((v) => (
+                        <code key={v} className="rounded-r9 border border-line-2 bg-white px-2 py-1 font-mono text-[12px] text-ink">{v}</code>
+                      ))}
+                    </div>
+                  </div>
+                </Card>
+              )}
+
+              {activeTab === 'features' && (
+                <Card className="p-5 sm:p-6">
+                  <SectionHeading icon={ToggleLeft} title="Feature flags" description="Switch candidate-facing modules on or off." />
+                  <div className="divide-y divide-line-2">
+                    {FLAGS.map((f) => (
+                      <ToggleRow
+                        key={f.key}
+                        id={`setting-${f.key}`}
+                        icon={f.icon}
+                        title={f.title}
+                        body={f.body}
+                        checked={draft[f.key]}
+                        onChange={set(f.key)}
+                      />
+                    ))}
+                  </div>
+                </Card>
+              )}
+            </fieldset>
+
+            {canEdit && (
+              <div className="sticky bottom-3 z-10 space-y-2">
+                {serverError && (
+                  <div className="rounded-r18 bg-white shadow-pop">
+                    <Alert tone="error" title="Settings weren’t saved">{serverError}</Alert>
+                  </div>
+                )}
+                <div className="flex items-center justify-between gap-2 rounded-r20 border border-line-2 bg-white/95 py-2.5 pl-4 pr-2.5 shadow-pop backdrop-blur sm:gap-3 sm:py-3 sm:pr-3">
+                  <p className="flex min-w-0 items-center gap-2 text-[13.5px]" aria-live="polite">
+                    <span className={cn('h-2 w-2 flex-shrink-0 rounded-full', Object.keys(errors).length || dirty ? 'bg-coral-bar' : 'bg-lime-ok')} aria-hidden="true" />
+                    {Object.keys(errors).length > 0 ? (
+                      <span className="truncate text-coral">
+                        <span className="sm:hidden">Fix errors</span>
+                        <span className="hidden sm:inline">Fix the highlighted fields to save.</span>
+                      </span>
+                    ) : dirty ? (
+                      <span className="truncate">
+                        <span className="sm:hidden">Unsaved</span>
+                        <span className="hidden sm:inline">You have unsaved changes.</span>
+                      </span>
+                    ) : (
+                      <span className="truncate text-muted">
+                        <span className="sm:hidden">Saved</span>
+                        <span className="hidden sm:inline">All changes saved.</span>
+                      </span>
+                    )}
+                  </p>
+                  <div className="flex flex-shrink-0 items-center gap-1.5 sm:gap-2">
+                    <Button variant="ghost" icon={Undo2} onClick={discard} disabled={!dirty || saving} className="px-3 sm:px-[18px]">
+                      <span className="sr-only sm:not-sr-only">Discard</span>
+                    </Button>
+                    <Button type="submit" variant="ink" icon={Save} loading={saving}>
+                      {saving ? 'Saving…' : 'Save changes'}
+                    </Button>
                   </div>
                 </div>
               </div>
             )}
-
-            {/* Storage Settings */}
-            {activeTab === 'storage' && (
-              <div className="space-y-4">
-                <h3 className="text-white text-sm font-semibold flex items-center gap-2 border-b border-white/10 pb-2">
-                  <Database size={16} className="text-slate-400" />
-                  Upload Storage Buckets Routing
-                </h3>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div className="sm:col-span-2">
-                    <label className="form-label">Primary Active Provider</label>
-                    <select
-                      className="form-select"
-                      value={form.storage.provider}
-                      onChange={(e) => setForm(p => ({ ...p, storage: { ...p.storage, provider: e.target.value } }))}
-                    >
-                      <option value="local">Local Disk Node storage</option>
-                      <option value="cloudinary">Cloudinary Asset Server</option>
-                      <option value="s3">AWS S3 Simple Storage Buckets</option>
-                    </select>
-                  </div>
-
-                  {/* Cloudinary credentials */}
-                  {form.storage.provider === 'cloudinary' && (
-                    <div className="sm:col-span-2 grid grid-cols-1 sm:grid-cols-3 gap-3 p-4 bg-white/2 rounded-xl border border-white/[0.04]">
-                      <div className="sm:col-span-3 text-xs text-indigo-400 font-semibold mb-1">Cloudinary Access Keys</div>
-                      <div>
-                        <label className="form-label">Cloud Name</label>
-                        <input className="form-input text-xs" value={form.storage.cloudinary.cloudName} onChange={(e) => setForm(p => ({ ...p, storage: { ...p.storage, cloudinary: { ...p.storage.cloudinary, cloudName: e.target.value } } }))} />
-                      </div>
-                      <div>
-                        <label className="form-label">API Key</label>
-                        <input className="form-input text-xs" value={form.storage.cloudinary.apiKey} onChange={(e) => setForm(p => ({ ...p, storage: { ...p.storage, cloudinary: { ...p.storage.cloudinary, apiKey: e.target.value } } }))} />
-                      </div>
-                      <div>
-                        <label className="form-label">API Secret</label>
-                        <input type="password" className="form-input text-xs" value={form.storage.cloudinary.apiSecret} onChange={(e) => setForm(p => ({ ...p, storage: { ...p.storage, cloudinary: { ...p.storage.cloudinary, apiSecret: e.target.value } } }))} />
-                      </div>
-                    </div>
-                  )}
-
-                  {/* AWS S3 credentials */}
-                  {form.storage.provider === 's3' && (
-                    <div className="sm:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-3 p-4 bg-white/2 rounded-xl border border-white/[0.04]">
-                      <div className="sm:col-span-2 text-xs text-indigo-400 font-semibold mb-1">AWS Simple Storage Bucket Configs</div>
-                      <div>
-                        <label className="form-label">Bucket Name</label>
-                        <input className="form-input text-xs" value={form.storage.aws.bucket} onChange={(e) => setForm(p => ({ ...p, storage: { ...p.storage, aws: { ...p.storage.aws, bucket: e.target.value } } }))} />
-                      </div>
-                      <div>
-                        <label className="form-label">Region Code</label>
-                        <input className="form-input text-xs" value={form.storage.aws.region} onChange={(e) => setForm(p => ({ ...p, storage: { ...p.storage, aws: { ...p.storage.aws, region: e.target.value } } }))} placeholder="e.g. us-east-1" />
-                      </div>
-                      <div>
-                        <label className="form-label">AWS Access Key</label>
-                        <input className="form-input text-xs" value={form.storage.aws.accessKey} onChange={(e) => setForm(p => ({ ...p, storage: { ...p.storage, aws: { ...p.storage.aws, accessKey: e.target.value } } }))} />
-                      </div>
-                      <div>
-                        <label className="form-label">AWS Secret Key</label>
-                        <input type="password" className="form-input text-xs" value={form.storage.aws.secretKey} onChange={(e) => setForm(p => ({ ...p, storage: { ...p.storage, aws: { ...p.storage.aws, secretKey: e.target.value } } }))} />
-                      </div>
-                    </div>
-                  )}
-
-                </div>
-              </div>
-            )}
-
-            {/* Feature Flags settings */}
-            {activeTab === 'features' && (
-              <div className="space-y-4">
-                <h3 className="text-white text-sm font-semibold flex items-center gap-2 border-b border-white/10 pb-2">
-                  <ToggleLeft size={16} className="text-slate-400" />
-                  Application Active Modules
-                </h3>
-
-                <div className="space-y-3">
-                  <label className="flex items-center justify-between p-3 rounded-xl bg-white/[0.02] border border-white/[0.05] cursor-pointer hover:bg-white/[0.04] transition-colors">
-                    <div className="space-y-0.5">
-                      <p className="text-xs font-semibold text-white">Jobs Module</p>
-                      <p className="text-[10px] text-slate-500">Enable searching, applying and matching custom postings</p>
-                    </div>
-                    <input
-                      type="checkbox"
-                      checked={form.featureFlags.enableJobs}
-                      onChange={(e) => setForm(p => ({ ...p, featureFlags: { ...p.featureFlags, enableJobs: e.target.checked } }))}
-                      className="w-4 h-4 bg-surface-card border-slate-600 rounded text-brand-600 focus:ring-brand-500"
-                    />
-                  </label>
-
-                  <label className="flex items-center justify-between p-3 rounded-xl bg-white/[0.02] border border-white/[0.05] cursor-pointer hover:bg-white/[0.04] transition-colors">
-                    <div className="space-y-0.5">
-                      <p className="text-xs font-semibold text-white">Adzuna Job Scraper</p>
-                      <p className="text-[10px] text-slate-500">Enable background sync timers imports lists</p>
-                    </div>
-                    <input
-                      type="checkbox"
-                      checked={form.featureFlags.enableScraper}
-                      onChange={(e) => setForm(p => ({ ...p, featureFlags: { ...p.featureFlags, enableScraper: e.target.checked } }))}
-                      className="w-4 h-4 bg-surface-card border-slate-600 rounded text-brand-600 focus:ring-brand-500"
-                    />
-                  </label>
-
-                  <label className="flex items-center justify-between p-3 rounded-xl bg-white/[0.02] border border-white/[0.05] cursor-pointer hover:bg-white/[0.04] transition-colors">
-                    <div className="space-y-0.5">
-                      <p className="text-xs font-semibold text-white">ATS Evaluator Scorer</p>
-                      <p className="text-[10px] text-slate-500">Allows candidates to test resume matching scores</p>
-                    </div>
-                    <input
-                      type="checkbox"
-                      checked={form.featureFlags.enableATS}
-                      onChange={(e) => setForm(p => ({ ...p, featureFlags: { ...p.featureFlags, enableATS: e.target.checked } }))}
-                      className="w-4 h-4 bg-surface-card border-slate-600 rounded text-brand-600 focus:ring-brand-500"
-                    />
-                  </label>
-
-                  <label className="flex items-center justify-between p-3 rounded-xl bg-white/[0.02] border border-white/[0.05] cursor-pointer hover:bg-white/[0.04] transition-colors">
-                    <div className="space-y-0.5">
-                      <p className="text-xs font-semibold text-white">Interactive Career Coach</p>
-                      <p className="text-[10px] text-slate-500">Renders AI feedback advice chats dashboards</p>
-                    </div>
-                    <input
-                      type="checkbox"
-                      checked={form.featureFlags.enableCoach}
-                      onChange={(e) => setForm(p => ({ ...p, featureFlags: { ...p.featureFlags, enableCoach: e.target.checked } }))}
-                      className="w-4 h-4 bg-surface-card border-slate-600 rounded text-brand-600 focus:ring-brand-500"
-                    />
-                  </label>
-                </div>
-              </div>
-            )}
-
-          </div>
-
-        </form>
+          </form>
+        </div>
       )}
-
     </div>
   );
 }
