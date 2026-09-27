@@ -85,6 +85,10 @@ test('malformed AI output is retryable and generation/complete retries do not do
       response = await request('/sessions/start', { interviewId });
       assert.equal(response.status, 201);
       const sessionId = (await response.json()).session._id;
+      response = await request(`/sessions/${sessionId}/complete`);
+      assert.equal(response.status, 400);
+      response = await request(`/sessions/${sessionId}/answer`, { questionId: String(interview.questions[0]._id), answerText: '  ' });
+      assert.equal(response.status, 400);
       for (const question of interview.questions) {
         response = await request(`/sessions/${sessionId}/answer`, { questionId: String(question._id),
           answerText: 'I would use transactions and retries.', timeTaken: 10 });

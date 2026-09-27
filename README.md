@@ -1,6 +1,6 @@
 # 🎯 InterviewMaster
 
-> **Current implementation status:** PayU India hosted checkout, confirmed fulfillment, refund reconciliation, private PDF uploads and interview allowances run on the existing MongoDB application. Firebase Auth is available as an opt-in bridge and is tested with the local emulator. The Prisma migration has been applied and tested on PostgreSQL, but **the running application has not cut over to PostgreSQL**. Paid plans are one-time passes, and external PayU sandbox and AI/storage journeys remain unverified. See [implementation status](docs/IMPLEMENTATION_STATUS.md), [PayU setup](docs/PAYU.md), [schema](docs/POSTGRESQL_SCHEMA.md) and [user migration](docs/USER_MIGRATION.md) before deployment.
+> **Current implementation status:** PayU India hosted checkout, confirmed fulfillment, refund reconciliation, private PDF uploads and interview allowances run on the existing MongoDB application. Firebase Auth is available as an opt-in bridge and is tested with the local emulator. The Prisma migration has been applied and tested on PostgreSQL, but **the running application has not cut over to PostgreSQL**. Paid plans are one-time passes, and external PayU sandbox and AI/storage journeys remain unverified. See [implementation status](docs/IMPLEMENTATION_STATUS.md), [local setup and operations](docs/OPERATIONS.md), [PayU setup](docs/PAYU.md), [schema](docs/POSTGRESQL_SCHEMA.md) and [user migration](docs/USER_MIGRATION.md) before deployment.
 
 <div align="center">
 

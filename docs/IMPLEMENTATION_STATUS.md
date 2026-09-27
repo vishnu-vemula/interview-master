@@ -11,6 +11,8 @@ The application is **not production ready against the supplied acceptance criter
 - Playwright browser flow: register, verify through the Auth Emulator, sign in, load profile, delete account.
 - PostgreSQL 17.11: the initial Prisma migration applies to a disposable database. It creates 23 foreign keys. Tests verify cross-interview answer rejection and one active default resume per user.
 - MongoDB concurrency test: ten simultaneous session starts produce one active session; concurrent answer saves retain one answer per question.
+- Mocked Groq provider boundary test: malformed question and evaluation output are retryable; generation uses a lease so an abandoned attempt can be reclaimed; repeat requests do not duplicate questions, completion or usage debit. Empty answers and incomplete sessions are rejected.
+- Legacy OAuth callback rejects signed states without the short-lived, HTTP-only browser nonce cookie. Public PayU callback bodies are capped at 32 KB.
 - Idempotent bcrypt identity migration script tested with Firebase Auth Emulator and disposable MongoDB/PostgreSQL. The emulator accepts imported hashes but **cannot validate bcrypt sign-in**; a real Firebase project test remains required.
 - Local `interviewmaster` MongoDB had zero users, resumes, interviews, sessions, plans and payment orders when checked, so there was no local historical data to cut over.
 
@@ -29,5 +31,6 @@ The application is **not production ready against the supplied acceptance criter
 - PayU recurring standing instructions, automated renewal, cancellation and customer self-service portal are not implemented. Paid plans are one-time passes. No live sandbox transaction or refund was performed.
 - Account deletion handles current MongoDB candidate data, Cloudinary cleanup and Firebase identity in Firebase mode, with anonymized PayU contact fields. It has no durable retry queue if external storage deletion fails; an administrator must retry a stranded legacy deletion. Operational retention and backup automation need deployment decisions.
 - Full browser acceptance across resume upload, AI, PayU, job sync and admin workflows, staging smoke testing, monitoring, backup restore drill and deployment pipeline remain unverified or unimplemented.
+- A Compose local service definition, a GitHub verification workflow and an operations runbook now exist. Docker was unavailable on this workstation, and the GitHub workflow and restore drill have not run yet.
 
 Do not deploy solely because builds and local tests pass. See [the PayU guide](PAYU.md), [schema contract](POSTGRESQL_SCHEMA.md), and [identity migration guide](USER_MIGRATION.md).
