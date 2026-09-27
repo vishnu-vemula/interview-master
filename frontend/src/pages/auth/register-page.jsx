@@ -5,7 +5,7 @@ import { AlertCircle } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useAuthStore } from '@/store/auth-store';
 import { Alert, Button, Field, Input, PasswordInput } from '@/components/ui';
-import { AuthFinePrint, AuthHeading, SocialSignIn, safeNext } from './auth-shared';
+import { AuthFinePrint, AuthHeading, safeNext } from './auth-shared';
 
 const PASSWORD_RULE = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/;
 
@@ -49,13 +49,7 @@ export default function RegisterPage() {
     <div className="animate-fade-in">
       <AuthHeading title="Create your account" subtitle="Two free tailored interviews every month. No card needed." />
 
-      <SocialSignIn
-        next={safeNext(search)}
-        onError={setServerError}
-        onSuccess={() => navigate(safeNext(search), { replace: true })}
-      />
-
-      <form onSubmit={handleSubmit(onSubmit)} noValidate className="flex flex-col gap-3.5">
+      <form onSubmit={handleSubmit(onSubmit)} noValidate className="mt-8 flex flex-col gap-3.5">
         {serverError && (
           <Alert tone="error" icon={AlertCircle}>
             {serverError}

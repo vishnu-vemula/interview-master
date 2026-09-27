@@ -158,8 +158,7 @@ PORT=5000
 NODE_ENV=development
 
 DATABASE_URL=postgresql://interviewmaster:local_development_only@127.0.0.1:5432/interviewmaster
-FIREBASE_PROJECT_ID=demo-interviewmaster
-FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:9099
+FIREBASE_PROJECT_ID=taskmanager-a5ac2
 
 GROQ_API_KEY=your_groq_api_key
 OPENAI_API_KEY=your_openai_api_key
@@ -182,6 +181,10 @@ ADZUNA_APP_KEY=your_app_key
 ADZUNA_COUNTRY=in
 ```
 
+For the live Firebase project, provide API-side Application Default Credentials
+for `taskmanager-a5ac2` before starting the API. The web configuration below
+does not authenticate the server.
+
 ### 3. Configure the frontend
 
 ```bash
@@ -193,11 +196,13 @@ cp .env.example .env
 
 ```env
 VITE_API_URL=http://localhost:5000/api
-VITE_APP_NAME=InterviewMaster
-VITE_FIREBASE_API_KEY=replace_with_firebase_web_api_key
-VITE_FIREBASE_AUTH_DOMAIN=demo-interviewmaster.firebaseapp.com
-VITE_FIREBASE_PROJECT_ID=demo-interviewmaster
-VITE_FIREBASE_AUTH_EMULATOR_URL=http://127.0.0.1:9099
+VITE_APP_NAME=Rehearsly
+VITE_FIREBASE_API_KEY=AIzaSyBIrVkK0IbCkZkybxoiLsd98z_jijzQ1qM
+VITE_FIREBASE_AUTH_DOMAIN=taskmanager-a5ac2.firebaseapp.com
+VITE_FIREBASE_PROJECT_ID=taskmanager-a5ac2
+VITE_FIREBASE_STORAGE_BUCKET=taskmanager-a5ac2.firebasestorage.app
+VITE_FIREBASE_MESSAGING_SENDER_ID=467683095414
+VITE_FIREBASE_APP_ID=1:467683095414:web:dfc51f26547d2874674057
 ```
 
 ### 4. Apply the database schema and bootstrap the first admin

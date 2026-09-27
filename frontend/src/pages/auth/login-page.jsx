@@ -5,7 +5,7 @@ import { AlertCircle } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useAuthStore } from '@/store/auth-store';
 import { Alert, Button, Field, Input, PasswordInput } from '@/components/ui';
-import { AuthFinePrint, AuthHeading, OAUTH_ERRORS, SocialSignIn, safeNext } from './auth-shared';
+import { AuthFinePrint, AuthHeading, OAUTH_ERRORS, safeNext } from './auth-shared';
 
 export default function LoginPage() {
   const { login, isLoading } = useAuthStore();
@@ -34,15 +34,9 @@ export default function LoginPage() {
 
   return (
     <div className="animate-fade-in">
-      <AuthHeading title="Welcome back" subtitle="Your paused session is saved right where you left it." />
+      <AuthHeading title="Welcome back" />
 
-      <SocialSignIn
-        next={safeNext(search)}
-        onError={setServerError}
-        onSuccess={() => navigate(safeNext(search), { replace: true })}
-      />
-
-      <form onSubmit={handleSubmit(onSubmit)} noValidate className="flex flex-col gap-3.5">
+      <form onSubmit={handleSubmit(onSubmit)} noValidate className="mt-8 flex flex-col gap-3.5">
         {serverError && (
           <Alert tone="error" icon={AlertCircle}>
             {serverError}
