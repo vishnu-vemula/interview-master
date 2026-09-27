@@ -1,16 +1,16 @@
 import express from 'express';
 import { body } from 'express-validator';
 const router = express.Router();
-import { protect } from '../middleware/auth.middleware';
+import { protectPostgres } from '../middleware/postgres-auth.middleware';
 import {
   getProfile,
   updateProfile,
   changePassword,
   getDashboard,
   deleteMyAccount,
-} from '../controllers/user.controller';
+} from '../controllers/postgres-user.controller';
 
-router.use(protect); // all user routes are protected
+router.use(protectPostgres);
 
 router.get('/profile', getProfile);
 router.put('/profile', [

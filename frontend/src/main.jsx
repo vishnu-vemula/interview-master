@@ -1,8 +1,7 @@
 /**
  * main.jsx — Application entry point
  *
- * Auth state is managed by Zustand (authStore) with localStorage persistence.
- * Admin auth state is managed by AdminAuthContext (separate context).
+ * Firebase restores identity; Zustand and AdminAuthContext hold API profiles.
  * AppProvider handles UI-level global state (sidebar).
  * ConfirmProvider renders the design-system confirm dialog (useConfirm()).
  *

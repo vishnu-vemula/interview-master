@@ -10,6 +10,7 @@ import Interview from '../models/interview.model';
 import Resume from '../models/resume.model';
 import { io as socketClient } from 'socket.io-client';
 import initSocket from '../socket';
+import { retireCandidateAndIdentity } from './account-deletion.service';
 
 const uri = process.env.TEST_FIREBASE_MONGO_URI;
 const run = Boolean(uri?.endsWith('/interviewmaster_firebase_test') &&
@@ -25,7 +26,7 @@ test('Firebase emulator verifies identity, rejects email takeover, and enforces 
     const marker = randomUUID();
     const createdUids: string[] = [];
     await mongoose.connect(uri!);
-    const { default: app } = await import('../app.js') as any;
+    const { default: app } = await import('../legacy-test-app.js') as any;
     const server = createServer(app);
     const io = initSocket(server);
     await new Promise<void>(resolve => server.listen(0, resolve));
@@ -116,6 +117,17 @@ test('Firebase emulator verifies identity, rejects email takeover, and enforces 
       await assert.rejects(auth.getUser(other.uid));
       assert.equal(await Interview.countDocuments({ userId: otherUser._id }), 0);
       assert.ok((await User.findById(otherUser._id))?.deletedAt);
+
+      const adminDeleted = await create('admin-deleted', true);
+      const adminDeletedToken = await tokenFor(adminDeleted.email!);
+      response = await fetch(`${base}/api/auth/firebase/session`, { method: 'POST',
+        headers: { Authorization: `Bearer ${adminDeletedToken}` } });
+      assert.equal(response.status, 200);
+      const adminDeletedUser: any = await User.findOne({ firebaseUid: adminDeleted.uid });
+      await retireCandidateAndIdentity(String(adminDeletedUser._id));
+      await retireCandidateAndIdentity(String(adminDeletedUser._id));
+      await assert.rejects(auth.getUser(adminDeleted.uid));
+      assert.ok((await User.findById(adminDeletedUser._id))?.deletedAt);
 
       const adminEmail = `admin-${marker}@example.com`;
       await User.create({ name: 'Existing Admin', email: adminEmail, password, role: 'super_admin' });

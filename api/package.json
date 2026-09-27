@@ -1,7 +1,7 @@
 {
   "name": "interview-master-backend",
   "version": "1.2.0",
-  "description": "InterviewMaster Backend - Node.js + Express + MongoDB",
+  "description": "InterviewMaster API - Express, Firebase Authentication and PostgreSQL",
   "author": "vishnu-vemula",
   "main": "dist/server.js",
   "scripts": {
@@ -10,10 +10,12 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit",
     "seed:admin": "tsx src/scripts/seed-admin.ts",
-    "test": "tsx --test src/services/billing/*.test.ts src/services/db/*.test.ts src/services/firebase-identity.test.ts src/services/session-integrity.test.ts src/services/ai-journey.test.ts src/services/oauth-state.test.ts src/scripts/migrate-users.test.ts",
+    "test": "tsx --test --test-concurrency=1 src/services/billing/*.test.ts src/services/db/*.test.ts src/services/firebase-identity.test.ts src/services/postgres-identity.test.ts src/services/postgres-job-service.test.ts src/services/postgres-entitlements.test.ts src/services/postgres-resume.test.ts src/services/postgres-journey.test.ts src/services/postgres-billing.test.ts src/services/postgres-account-deletion.test.ts src/services/postgres-socket.test.ts src/services/postgres-admin-users.test.ts src/services/session-integrity.test.ts src/services/ai-journey.test.ts src/services/oauth-state.test.ts src/services/resume-flow.test.ts src/scripts/migrate-users.test.ts src/scripts/migrate-related.test.ts src/scripts/seed-admin.test.ts",
     "prisma:validate": "prisma validate",
     "prisma:generate": "prisma generate",
-    "migrate:users": "tsx src/scripts/migrate-users.ts"
+    "migrate:users": "tsx src/scripts/migrate-users.ts",
+    "migrate:related": "tsx src/scripts/migrate-related.ts",
+    "smoke:providers": "tsx src/scripts/provider-smoke.ts"
   },
   "dependencies": {
     "@langchain/core": "^1.1.35",

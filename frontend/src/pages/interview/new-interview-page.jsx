@@ -76,7 +76,7 @@ export default function NewInterviewPage() {
       const def = resumes.find((r) => r.isDefault);
       if (def) setSelectedResume(def._id);
     }
-  }, [resumes]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [resumes]);
 
   const toggleType = (type) => {
     setSelectedTypes((prev) => (prev.includes(type) ? (prev.length > 1 ? prev.filter((t) => t !== type) : prev) : [...prev, type]));

@@ -42,12 +42,13 @@ export async function migrateUsers(apply: boolean) {
   try {
     for await (const source of User.find().select('+password +firebaseUid').cursor()) {
       const legacyId = String(source._id);
-      const uid = `im_${legacyId}`;
+      // Firebase bridge accounts already have an identity. Keep it; never
+      // create a second Firebase account for the same application user.
+      const uid = String(source.firebaseUid || `im_${legacyId}`);
       const email = String(source.email || '').toLowerCase();
       result.inspected++;
       try {
         if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('invalid_email');
-        if (source.firebaseUid && source.firebaseUid !== uid) throw new Error('different_firebase_identity');
         const existingByUid = await getFirebaseUser('uid', uid);
         const existingByEmail = await getFirebaseUser('email', email);
         if (existingByEmail && existingByEmail.uid !== uid) throw new Error('email_collision_in_firebase');
@@ -82,6 +83,9 @@ export async function migrateUsers(apply: boolean) {
         const role: UserRole = roles.has(source.role as UserRole) ? source.role as UserRole : 'candidate';
         await db.user.upsert({ where: { id }, update: {}, create: {
           id, firebaseUid: uid, email, displayName: source.name, role, status,
+          avatar: source.avatar || null, credits: source.credits ?? 10,
+          isPremium: Boolean(source.isPremium), lastLogin: source.lastLogin || null,
+          totalSessions: source.totalSessions ?? 0,
           createdAt: source.createdAt, updatedAt: source.updatedAt,
           deletedAt: source.deletedAt || null,
         } });
@@ -95,7 +99,7 @@ export async function migrateUsers(apply: boolean) {
       }
     }
     if (apply) {
-      const mapped = await db.user.count({ where: { firebaseUid: { startsWith: 'im_' } } });
+      const mapped = await db.user.count();
       console.log(JSON.stringify({ ...result, mappedPostgresUsers: mapped }, null, 2));
     } else console.log(JSON.stringify({ ...result, dryRun: true }, null, 2));
     if (result.failed.length) process.exitCode = 1;

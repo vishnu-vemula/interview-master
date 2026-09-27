@@ -1,6 +1,6 @@
 # 🎯 InterviewMaster
 
-> **Current implementation status:** PayU India hosted checkout, confirmed fulfillment, refund reconciliation, private PDF uploads and interview allowances run on the existing MongoDB application. Firebase Auth is available as an opt-in bridge and is tested with the local emulator. The Prisma migration has been applied and tested on PostgreSQL, but **the running application has not cut over to PostgreSQL**. Paid plans are one-time passes, and external PayU sandbox and AI/storage journeys remain unverified. See [implementation status](docs/IMPLEMENTATION_STATUS.md), [local setup and operations](docs/OPERATIONS.md), [PayU setup](docs/PAYU.md), [schema](docs/POSTGRESQL_SCHEMA.md) and [user migration](docs/USER_MIGRATION.md) before deployment.
+> **Current implementation status:** The API uses PostgreSQL/Prisma for application data and Firebase Authentication for identity. PayU India hosted checkout, reconciliation, private PDF uploads and interview allowances have local integration tests. Real Firebase project migration, PayU sandbox, Cloudinary and AI provider verification remain required before production. See [implementation status](docs/IMPLEMENTATION_STATUS.md), [local setup and operations](docs/OPERATIONS.md), [PayU setup](docs/PAYU.md), [schema](docs/POSTGRESQL_SCHEMA.md) and [user migration](docs/USER_MIGRATION.md).
 
 <div align="center">
 
@@ -8,7 +8,7 @@
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
 ![Node.js](https://img.shields.io/badge/Node.js-43853D?style=for-the-badge&logo=node.js&logoColor=white)
 ![React](https://img.shields.io/badge/React-20232A?style=for-the-badge&logo=react&logoColor=61DAFB)
-![MongoDB](https://img.shields.io/badge/MongoDB-4EA94B?style=for-the-badge&logo=mongodb&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-4169E1?style=for-the-badge&logo=postgresql&logoColor=white)
 
 **A mock interview platform that reads your resume, asks real questions, and scores every answer.**
 
@@ -42,7 +42,7 @@
 | 📊 Answer scoring | Per-answer evaluation + final report via Groq LLM |
 | 📈 Dashboard | Session history, score trends, performance analytics |
 | 💼 Job Board | Live listings from the Adzuna API with match scoring |
-| 🔐 Auth | Firebase Auth bridge or legacy JWT mode; server-side role checks |
+| 🔐 Auth | Firebase Auth with server-side PostgreSQL role and status checks |
 | ☁️ Cloud storage | Resumes stored on Cloudinary |
 | ⚡ Redis cache | Multi-level caching for job searches |
 | 📝 Admin panel | Users, content, prompts, scraper and analytics management |
@@ -55,12 +55,12 @@
 ### API (`/api`)
 - **Language**: TypeScript (strict mode, staged ramp-up)
 - **Runtime**: Node.js + Express
-- **Database**: MongoDB (Mongoose)
+- **Database**: PostgreSQL (Prisma)
 - **AI / LLM**: Groq SDK (Llama 3), LangChain, OpenAI embeddings
 - **Real-time**: Socket.io
 - **File storage**: Cloudinary + Multer
 - **Cache**: Redis (official client, compat wrapper)
-- **Auth**: Firebase Admin SDK bridge and legacy JWT mode, RBAC middleware
+- **Auth**: Firebase client and Admin SDK, RBAC middleware
 - **Security**: Helmet, CORS, express-rate-limit, compression
 - **Logging**: Winston request logging with query strings omitted
 
@@ -84,8 +84,8 @@ interview-master/
 │   └── src/
 │       ├── server.ts               # HTTP bootstrap, schedulers, lifecycle
 │       ├── app.ts                  # Express app: middleware, routes, logging
-│       ├── socket.ts               # Real-time follow-up Q&A logic
-│       ├── config/                 # db, redis, groq, cloudinary, logger
+│       ├── postgres-socket.ts      # Firebase-authenticated follow-up Q&A
+│       ├── config/                 # prisma, redis, groq, cloudinary, logger
 │       ├── controllers/            # Route handlers (one concern per module)
 │       │   ├── admin.controller/   # stats | users | content + barrel
 │       │   ├── auth.controller.ts
@@ -101,7 +101,7 @@ interview-master/
 │       │   ├── chunking.service.ts # Semantic document splitting
 │       │   ├── optimizer.service.ts
 │       │   └── job-*.ts            # sync, cleanup, search, match services
-│       ├── models/                 # Mongoose schemas (kebab-case files)
+│       ├── models/                 # Legacy MongoDB import and regression test schemas
 │       ├── routes/                 # API route definitions
 │       ├── middleware/             # auth, rbac, upload, validation, logging
 │       ├── utils/                  # query-parser/, deduplicator, scoring-engine
@@ -128,8 +128,8 @@ interview-master/
 
 ### Prerequisites
 
-- [Node.js](https://nodejs.org/) v18+
-- [MongoDB Atlas](https://www.mongodb.com/atlas) account (or local MongoDB)
+- [Node.js](https://nodejs.org/) v22+
+- PostgreSQL 17 and a Firebase project (or the Auth Emulator for local tests)
 - [Redis](https://redis.io/) (local or cloud — Upstash / Redis Cloud)
 - [Groq API key](https://console.groq.com) — free tier available
 - [OpenAI API key](https://platform.openai.com) — for embeddings
@@ -157,12 +157,9 @@ Fill in `api/.env`:
 PORT=5000
 NODE_ENV=development
 
-MONGO_URI=mongodb+srv://<user>:<pass>@cluster.mongodb.net/interviewmaster_db
-
-JWT_SECRET=your_super_secret_jwt_key_min_32_chars
-JWT_EXPIRE=7d
-JWT_REFRESH_SECRET=your_refresh_token_secret_min_32_chars
-JWT_REFRESH_EXPIRE=30d
+DATABASE_URL=postgresql://interviewmaster:local_development_only@127.0.0.1:5432/interviewmaster
+FIREBASE_PROJECT_ID=demo-interviewmaster
+FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:9099
 
 GROQ_API_KEY=your_groq_api_key
 OPENAI_API_KEY=your_openai_api_key
@@ -172,10 +169,13 @@ CLOUDINARY_API_KEY=your_api_key
 CLOUDINARY_API_SECRET=your_api_secret
 
 CLIENT_URL=http://localhost:5173
+API_PUBLIC_URL=http://localhost:5000
+PAYU_ENV=test
+PAYU_MERCHANT_KEY=replace_with_test_merchant_key
+PAYU_MERCHANT_SALT=replace_with_test_merchant_salt
 
 REDIS_ENABLED=true
-REDIS_HOST=127.0.0.1
-REDIS_PORT=6379
+REDIS_URL=redis://127.0.0.1:6379
 
 ADZUNA_APP_ID=your_app_id
 ADZUNA_APP_KEY=your_app_key
@@ -194,16 +194,24 @@ cp .env.example .env
 ```env
 VITE_API_URL=http://localhost:5000/api
 VITE_APP_NAME=InterviewMaster
+VITE_FIREBASE_API_KEY=replace_with_firebase_web_api_key
+VITE_FIREBASE_AUTH_DOMAIN=demo-interviewmaster.firebaseapp.com
+VITE_FIREBASE_PROJECT_ID=demo-interviewmaster
+VITE_FIREBASE_AUTH_EMULATOR_URL=http://127.0.0.1:9099
 ```
 
-### 4. Seed the admin account (optional)
+### 4. Apply the database schema and bootstrap the first admin
 
 ```bash
 cd ../api
+npx prisma migrate deploy
+npm run prisma:generate
+# First create and verify a Firebase user, then set the exact UID and email.
+# ADMIN_BOOTSTRAP_FIREBASE_UID=... ADMIN_BOOTSTRAP_EMAIL=...
 npm run seed:admin
 ```
 
-Creates `admin@interviewmaster.com` (default password `passwore123` — **change it immediately** in any real deployment).
+The bootstrap refuses to promote an existing user or run after any staff account exists. Remove its environment variables after use. See [migration instructions](docs/USER_MIGRATION.md).
 
 ### 5. Run
 
@@ -219,16 +227,15 @@ npm run dev:web          # Web    → http://localhost:5173
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/api/auth/register` | Register a new user |
-| `POST` | `/api/auth/login` | Login and receive tokens |
-| `POST` | `/api/auth/refresh` | Exchange refresh token |
+| `POST` | `/api/auth/firebase/session` | Reconcile a verified Firebase identity with a PostgreSQL User |
+| `GET` | `/api/auth/me` | Current PostgreSQL profile from a verified Firebase ID token |
 | `POST` | `/api/resumes/upload` | Upload a resume PDF |
 | `GET`  | `/api/resumes` | List uploaded resumes |
 | `POST` | `/api/interviews` | Create an interview |
 | `GET`  | `/api/interviews/:id` | Interview details |
-| `POST` | `/api/sessions` | Start an interview session |
+| `POST` | `/api/sessions/start` | Start an interview session |
 | `POST` | `/api/sessions/:id/answer` | Submit an answer for evaluation |
-| `GET`  | `/api/sessions/:id/report` | Final feedback report |
+| `GET`  | `/api/sessions/:id` | Session and feedback report |
 | `GET`  | `/api/users/dashboard` | Dashboard statistics |
 | `GET`  | `/api/jobs` | Search the Job Board |
 | `GET`  | `/api/health` | Liveness probe |
@@ -276,7 +283,7 @@ Final report
 | api | `npm run build` | Compile TypeScript → `dist/` |
 | api | `npm start` | Run the compiled build |
 | api | `npm run typecheck` | `tsc --noEmit` type check |
-| api | `npm run seed:admin` | Create the admin account |
+| api | `npm run seed:admin` | One-time verified Firebase super admin bootstrap |
 | web | `npm run dev` / `build` / `lint` | Vite dev server / production build / ESLint |
 
 ---
@@ -310,7 +317,7 @@ Released under the [MIT License](LICENSE).
 
 <div align="center">
 
-Built with **Groq**, **React**, and **MongoDB**
+Built with **Groq**, **React**, and **PostgreSQL**
 
 ⭐ If InterviewMaster helped you land the job, leave a star!
 

@@ -1,7 +1,7 @@
 import { initializeApp, getApps } from 'firebase/app';
 import { getAuth, connectAuthEmulator } from 'firebase/auth';
 
-export const firebaseMode = import.meta.env.VITE_AUTH_PROVIDER === 'firebase';
+export const firebaseMode = true;
 
 let firebaseAuth = null;
 if (firebaseMode) {

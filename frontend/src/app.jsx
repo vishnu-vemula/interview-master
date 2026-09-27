@@ -30,7 +30,6 @@ import LoginPage            from '@/pages/auth/login-page';
 import RegisterPage         from '@/pages/auth/register-page';
 import ForgotPasswordPage   from '@/pages/auth/forgot-password-page';
 import ResetPasswordPage    from '@/pages/auth/reset-password-page';
-import OAuthCallbackPage    from '@/pages/auth/oauth-callback-page';
 import DashboardPage        from '@/pages/dashboard/dashboard-page';
 import NewInterviewPage     from '@/pages/interview/new-interview-page';
 import InterviewListPage    from '@/pages/interview/interview-list-page';
@@ -129,7 +128,6 @@ export default function App() {
         <Route path="/forgot-password" element={<GuestRoute><ForgotPasswordPage /></GuestRoute>} />
         <Route path="/reset-password"  element={<ResetPasswordPage />} />
       </Route>
-      <Route path="/auth/callback" element={<OAuthCallbackPage />} />
 
       {/* ── Admin login ───────────────────────────── */}
       <Route

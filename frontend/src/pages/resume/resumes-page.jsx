@@ -138,7 +138,7 @@ export default function ResumesPage() {
     } finally {
       setUpload(null);
     }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   const { getRootProps, getInputProps, isDragActive, open } = useDropzone({
     onDrop,

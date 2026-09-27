@@ -13,7 +13,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import compression from 'compression';
-import mongoose from 'mongoose';
+import prisma from './config/prisma';
 import { getClient } from './config/redis';
 import { firebaseIsReady } from './services/firebase-identity.service';
 import requestLogger from './middleware/request-logger';
@@ -100,12 +100,12 @@ app.get('/api/health', (_req, res) =>
   res.status(200).json({ success: true, message: 'OK', timestamp: new Date().toISOString() })
 );
 app.get('/api/ready', async (_req, res) => {
-  const mongo = mongoose.connection.readyState === 1;
+  const postgres = await prisma.$queryRaw`SELECT 1`.then(() => true).catch(() => false);
   const redis = process.env.REDIS_ENABLED === 'false' ? process.env.NODE_ENV !== 'production' : Boolean(getClient()?.native.isReady);
   const payu = Boolean(process.env.PAYU_MERCHANT_KEY && process.env.PAYU_MERCHANT_SALT && ['test', 'production'].includes(process.env.PAYU_ENV || ''));
   const firebase = await firebaseIsReady();
-  const ready = mongo && redis && payu && firebase;
-  res.status(ready ? 200 : 503).json({ success: ready, services: { mongo, redis, payu, firebase } });
+  const ready = postgres && redis && payu && firebase;
+  res.status(ready ? 200 : 503).json({ success: ready, services: { postgres, redis, payu, firebase } });
 });
 
 // ─── API Routes ────────────────────────────────────────────────────

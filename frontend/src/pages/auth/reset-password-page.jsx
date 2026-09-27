@@ -13,7 +13,7 @@ export default function ResetPasswordPage() {
   const { confirmPasswordReset } = useAuthStore();
   const navigate = useNavigate();
   const { search } = useLocation();
-  const token = new URLSearchParams(search).get('token') || '';
+  const token = new URLSearchParams(search).get('oobCode') || '';
   const [serverError, setServerError] = useState('');
   const [expired, setExpired] = useState(false);
   const { register, handleSubmit, watch, formState: { errors, isSubmitting } } = useForm({
@@ -21,7 +21,7 @@ export default function ResetPasswordPage() {
   });
   const password = watch('password');
 
-  // Firebase mode resets passwords on Firebase's hosted page; a token-less URL is a broken link.
+  // Firebase password reset links provide an action code, never an application token.
   if (!token || !confirmPasswordReset) {
     return (
       <div className="animate-fade-in">
@@ -35,8 +35,8 @@ export default function ResetPasswordPage() {
     setServerError('');
     const result = await confirmPasswordReset({ token, password: data.password });
     if (result.success) {
-      toast.success('Password updated — you’re signed in');
-      navigate('/dashboard', { replace: true });
+      toast.success('Password updated. Sign in with your new password.');
+      navigate('/login', { replace: true });
       return;
     }
     if (result.status === 400 && /expired|invalid/i.test(result.message)) setExpired(true);

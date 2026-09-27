@@ -35,7 +35,7 @@ const useFetch = (asyncFn, deps = []) => {
     } finally {
       if (mountedRef.current) setLoading(false);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, deps);
 
   useEffect(() => { execute(); }, [execute]);

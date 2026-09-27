@@ -32,8 +32,11 @@ jobs:
       TEST_MIGRATION_MONGO_URI: mongodb://127.0.0.1:27017/interviewmaster_migration_test
       TEST_SESSION_MONGO_URI: mongodb://127.0.0.1:27017/interviewmaster_session_test
       TEST_AI_MONGO_URI: mongodb://127.0.0.1:27017/interviewmaster_ai_test
+      TEST_RELATED_MONGO_URI: mongodb://127.0.0.1:27017/interviewmaster_related_test
+      TEST_RESUME_MONGO_URI: mongodb://127.0.0.1:27017/interviewmaster_resume_test
       DATABASE_URL: postgresql://interviewmaster:local_ci_only@127.0.0.1:5432/interviewmaster_test
       TEST_DATABASE_URL: postgresql://interviewmaster:local_ci_only@127.0.0.1:5432/interviewmaster_test
+      TEST_BOOTSTRAP_DATABASE_URL: postgresql://interviewmaster:local_ci_only@127.0.0.1:5432/interviewmaster_clean_test
       FIREBASE_PROJECT_ID: demo-interviewmaster
       FIREBASE_AUTH_EMULATOR_HOST: 127.0.0.1:9099
       AUTH_PROVIDER: legacy
@@ -71,12 +74,23 @@ jobs:
           npm ci --prefix frontend
       - name: Check builds, dependencies and schema
         run: |
+          node - <<'NODE'
+          const { Client } = require('./api/node_modules/pg');
+          (async () => {
+            const client = new Client({ connectionString: 'postgresql://interviewmaster:local_ci_only@127.0.0.1:5432/postgres' });
+            await client.connect();
+            await client.query('CREATE DATABASE interviewmaster_clean_test');
+            await client.end();
+          })().catch(error => { console.error(error); process.exitCode = 1; });
+          NODE
           npm run build --prefix api
+          npm run lint --prefix frontend
           npm run build --prefix frontend
           npm audit --prefix api --omit=dev --audit-level=high
           npm audit --prefix frontend --omit=dev --audit-level=high
           npm run prisma:validate --prefix api
-          cd api && npx prisma migrate deploy
+          cd api && npx prisma migrate deploy && npx prisma generate
+          DATABASE_URL="$TEST_BOOTSTRAP_DATABASE_URL" npx prisma migrate deploy
       - name: Start Firebase Auth Emulator
         run: |
           cd api

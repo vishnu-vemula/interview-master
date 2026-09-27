@@ -1,5 +1,6 @@
-import Job from '../models/job.model';
 import logger from '../config/logger';
+import prisma from '../config/prisma';
+import { clearJobsCache } from '../config/redis';
 'use strict';
 
 /**
@@ -203,37 +204,45 @@ const deduplicateAndSave = async (rawJobs) => {
     return { success: false, error: 'No valid adzunaIds found' };
   }
 
-  logger.info(`JobDeduplicator: Deduplicating ${rawJobs.length} jobs against MongoDB using adzunaId index...`);
+  logger.info(`JobDeduplicator: Syncing ${rawJobs.length} jobs to PostgreSQL...`);
 
   try {
-    const existingJobs = await Job.find({ adzunaId: { $in: adzunaIds } }, { adzunaId: 1 }).lean();
-    const existingIdsSet = new Set(existingJobs.map((j) => String(j.adzunaId)));
-    logger.info(`JobDeduplicator: Found ${existingIdsSet.size} existing duplicate records in database.`);
-
-    const bulkOps = rawJobs.map((job) => {
-      const isDuplicate = existingIdsSet.has(String(job.adzunaId));
-      const { createdAt, ...jobData } = job;
-      if (isDuplicate) {
-        return { updateOne: { filter: { adzunaId: job.adzunaId }, update: { $set: jobData } } };
+    const source = await prisma.jobSource.upsert({ where: { name: 'Adzuna' }, update: { enabled: true },
+      create: { name: 'Adzuna', enabled: true } });
+    const run = await prisma.jobSyncRun.create({ data: { sourceId: source.id, status: 'running' } });
+    let insertedCount = 0;
+    let updatedCount = 0;
+    try {
+      for (const job of rawJobs) {
+        const externalId = String(job.adzunaId || '');
+        if (!externalId) continue;
+        const applyUrl = String(job.redirectUrl || job.applyUrl || '');
+        let parsed: URL;
+        try { parsed = new URL(applyUrl); } catch { continue; }
+        if (parsed.protocol !== 'https:' || parsed.username || parsed.password) continue;
+        const existing = await prisma.jobListing.findUnique({ where: { sourceId_externalId: { sourceId: source.id, externalId } } });
+        const data = { title: String(job.title || ''), company: String(job.company || ''),
+          location: String(job.location || 'Remote'), description: String(job.description || ''),
+          applyUrl: parsed.href, salaryMin: job.salaryMin ?? null, salaryMax: job.salaryMax ?? null,
+          category: String(job.category || 'General'), contractType: String(job.contractType || 'full_time'),
+          skills: Array.isArray(job.skills) ? job.skills.map(String) : [],
+          experience: String(job.experience || 'Not Specified'), active: true,
+          postedAt: job.postedTime ? new Date(job.postedTime) : null };
+        await prisma.jobListing.upsert({ where: { sourceId_externalId: { sourceId: source.id, externalId } },
+          update: data, create: { ...data, sourceId: source.id, externalId } });
+        if (existing) updatedCount++; else insertedCount++;
       }
-      return {
-        updateOne: {
-          filter: { adzunaId: job.adzunaId },
-          update: { $set: jobData, $setOnInsert: { createdAt: createdAt || new Date() } },
-          upsert: true,
-        },
-      };
-    });
-
-    const result = await Job.bulkWrite(bulkOps, { ordered: false });
-    const insertedCount = result.upsertedCount + result.insertedCount;
-    const updatedCount = result.modifiedCount;
-    const totalStored = await Job.countDocuments();
-
-    logger.info(`MongoDB updated: ${insertedCount + updatedCount} records`);
-    logger.info(`Duplicate skipped: ${existingIdsSet.size} records`);
-    logger.info(`Total jobs stored: ${totalStored} records`);
-
+      await prisma.jobSyncRun.update({ where: { id: run.id }, data: {
+        status: 'succeeded', fetched: rawJobs.length, inserted: insertedCount,
+        updated: updatedCount, finishedAt: new Date(),
+      } });
+      await clearJobsCache();
+    } catch (error) {
+      await prisma.jobSyncRun.update({ where: { id: run.id }, data: {
+        status: 'failed', errorCode: 'sync_failed', finishedAt: new Date(),
+      } });
+      throw error;
+    }
     return { success: true, processedCount: rawJobs.length, insertedCount, updatedCount };
   } catch (error) {
     logger.error(`JobDeduplicator Error: ${(error as Error).message}`);

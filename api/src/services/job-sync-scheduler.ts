@@ -46,6 +46,10 @@ const runScheduledSync = async () => {
  * Starts the Node-Cron cron-scheduler daemon.
  */
 const initSyncScheduler = () => {
+  if (!process.env.ADZUNA_APP_ID || !process.env.ADZUNA_APP_KEY) {
+    logger.warn('Adzuna sync disabled: credentials are not configured.');
+    return;
+  }
   logger.info('⚙️ Initializing Adzuna Job Sync Cron Daemon...');
 
   // 1. Run once shortly after startup (15 seconds delay)

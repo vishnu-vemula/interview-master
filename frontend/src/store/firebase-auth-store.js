@@ -4,6 +4,7 @@ import {
   reauthenticateWithCredential, reauthenticateWithPopup, updatePassword,
   sendEmailVerification, sendPasswordResetEmail, signInWithEmailAndPassword,
   signInWithPopup, signOut, updateProfile,
+  confirmPasswordReset as confirmFirebasePasswordReset,
 } from 'firebase/auth';
 import { auth } from '@/lib/firebase';
 import api from '@/lib/axios';
@@ -26,11 +27,8 @@ const syncUser = async () => {
 
 export const useFirebaseAuthStore = create((set, get) => ({
   user: null,
-  accessToken: null,
-  refreshToken: null,
   isAuthenticated: false,
   isLoading: true,
-  setAccessToken: () => {},
   login: async ({ email, password }) => {
     try {
       const credential = await signInWithEmailAndPassword(auth, email, password);
@@ -78,6 +76,12 @@ export const useFirebaseAuthStore = create((set, get) => ({
       return { success: false, message: firebaseMessage(error, 'Could not send a reset email') };
     }
   },
+  confirmPasswordReset: async ({ token, password }) => {
+    try { await confirmFirebasePasswordReset(auth, token, password);
+      return { success: true }; }
+    catch (error) { return { success: false, status: 400,
+      message: firebaseMessage(error, 'Reset link expired or invalid') }; }
+  },
   changeFirebasePassword: async ({ currentPassword, newPassword }) => {
     const current = auth.currentUser;
     if (!current?.email) throw new Error('Sign in again to change your password.');
@@ -98,8 +102,8 @@ export const useFirebaseAuthStore = create((set, get) => ({
     await signOut(auth).catch(() => {});
   },
   logout: async () => {
+    await signOut(auth);
     set({ user: null, isAuthenticated: false });
-    await signOut(auth).catch(() => {});
   },
   updateUser: (updatedUser) => set({ user: { ...get().user, ...updatedUser } }),
 }));

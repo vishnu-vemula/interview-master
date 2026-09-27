@@ -1,6 +1,6 @@
 # PostgreSQL target schema
 
-The source of truth is [`api/prisma/schema.prisma`](../api/prisma/schema.prisma) and the initial migration in `api/prisma/migrations/20260927_initial`. This schema is **not yet the running application's primary store**. It was applied to PostgreSQL 17.11 on a disposable `interviewmaster_test` database. The database reported 23 foreign keys, and the integration test checked the cross-interview answer constraint and active-default-resume index.
+The source of truth is [`api/prisma/schema.prisma`](../api/prisma/schema.prisma) and the ordered migrations in `api/prisma/migrations`. PostgreSQL is the running application's primary store. Six migrations applied from a clean disposable database; integration tests check cross-user resume/interview/session ownership, answer relationships and the active-default-resume index.
 
 ```mermaid
 erDiagram
@@ -42,7 +42,7 @@ This table was checked against `pg_constraint` after applying the migration. “
 | `AuditEvent.actorUserId` | `User.id` | Set null |
 | `BackgroundJob.ownerUserId` | `User.id` | Set null |
 | `BillingCustomer.userId` | `User.id` | Restrict |
-| `Interview.resumeId` | `Resume.id` | Set null |
+| `Interview(resumeId, userId)` | `Resume(id, userId)` | Restrict |
 | `Interview.userId` | `User.id` | Cascade |
 | `JobListing.sourceId` | `JobSource.id` | Restrict |
 | `JobSyncRun.sourceId` | `JobSource.id` | Restrict |
@@ -52,7 +52,7 @@ This table was checked against `pg_constraint` after applying the migration. “
 | `Resume.userId` | `User.id` | Cascade |
 | `ResumeChunk.resumeId` | `Resume.id` | Cascade |
 | `Session.evaluationJobId` | `BackgroundJob.id` | Set null |
-| `Session.interviewId` | `Interview.id` | Cascade |
+| `Session(interviewId, userId)` | `Interview(id, userId)` | Cascade |
 | `Session.userId` | `User.id` | Cascade |
 | `Subscription.orderId` | `PaymentOrder.id` | Restrict |
 | `Subscription.planId` | `Plan.id` | Restrict |
@@ -61,7 +61,7 @@ This table was checked against `pg_constraint` after applying the migration. “
 | `UsageLedgerEntry.sessionId` | `Session.id` | Set null |
 | `UsageLedgerEntry.userId` | `User.id` | Cascade |
 
-Deleting a resume retains interviews through `resumeSnapshot` and sets `resumeId` to null. In the current MongoDB application, resume deletion is instead blocked while an interview references it. Payment orders, subscriptions and billing customers restrict user deletion so that financial records cannot disappear accidentally. A complete account deletion workflow needs to anonymize retained records and remove stored files and Firebase identity before a production cutover.
+Deleting a resume is blocked while an interview references it. Payment orders, subscriptions and billing customers restrict user deletion so financial records cannot disappear accidentally. Candidate self-deletion and admin retirement anonymize the User and PayU contacts, remove candidate records, and delete the Firebase identity and private stored files. External deletion failure still requires an operational retry path.
 
 ## Reproduce the verification
 

@@ -8,7 +8,7 @@ test('OAuth callback requires the nonce cookie from the initiating browser', asy
   process.env.GOOGLE_CLIENT_SECRET = 'test-google-secret';
   process.env.API_PUBLIC_URL = 'http://localhost:5000';
   process.env.CLIENT_URL = 'http://localhost:5173';
-  const { default: app } = await import('../app.js') as any;
+  const { default: app } = await import('../legacy-test-app.js') as any;
   const server = app.listen(0);
   try {
     const address = server.address();

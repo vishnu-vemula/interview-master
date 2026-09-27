@@ -1,6 +1,6 @@
 import express from 'express';
 const router = express.Router();
-import { protect } from '../middleware/auth.middleware';
+import { protectPostgres } from '../middleware/postgres-auth.middleware';
 import upload from '../middleware/upload.middleware';
 import { body } from 'express-validator';
 import validate from '../middleware/validate';
@@ -11,9 +11,9 @@ import {
   setDefaultResume,
   parseResume,
   downloadResume,
-} from '../controllers/resume.controller';
+} from '../controllers/postgres-resume.controller';
 
-router.use(protect);
+router.use(protectPostgres);
 
 router.post('/upload', upload.single('resume'), uploadResume);
 router.get('/', getMyResumes);

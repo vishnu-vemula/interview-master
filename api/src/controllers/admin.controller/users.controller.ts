@@ -5,7 +5,7 @@ import Session from '../../models/session.model';
 import Resume from '../../models/resume.model';
 import Job from '../../models/job.model';
 import AppError from '../../utils/app-error';
-import { retireCandidateAccount } from '../../services/account-deletion.service';
+import { retireCandidateAndIdentity } from '../../services/account-deletion.service';
 const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 
@@ -158,7 +158,7 @@ export const bulkUserAction = async (req: Request, res: Response, next: NextFunc
   } else if (action === 'unban') {
     await User.updateMany({ _id: { $in: safeUserIds } }, { isBanned: false });
   } else if (action === 'delete') {
-    for (const id of safeUserIds) await retireCandidateAccount(String(id));
+    for (const id of safeUserIds) await retireCandidateAndIdentity(String(id));
   }
 
   res.status(200).json({
@@ -175,7 +175,7 @@ export const deleteUser = async (req: Request, res: Response, next: NextFunction
     return next(new AppError('Cannot delete the super admin account.', 403));
   }
 
-  await retireCandidateAccount(String(user._id));
+  await retireCandidateAndIdentity(String(user._id));
 
   res.status(200).json({ success: true, message: 'Candidate data removed and account retired; anonymized financial records retained.' });
 };

@@ -5,6 +5,7 @@ import { jobsAPI } from '@/services/api';
 import { Button, Drawer, Pill, Skeleton } from '@/components/ui';
 import { formatDate } from '@/utils';
 import { contractLabel } from './job-card';
+import { safeExternalUrl } from '@/lib/external-url';
 
 /**
  * JobDetailsDrawer — list data immediately; full Adzuna details are fetched only for
@@ -24,7 +25,7 @@ export default function JobDetailsDrawer({ job, onClose }) {
 
   if (!job) return null;
   const d = { ...job, ...(detail && typeof detail === 'object' ? detail : {}) };
-  const link = d.apply_url || d.url;
+  const link = safeExternalUrl(d.apply_url) || safeExternalUrl(d.url);
   const posted = d.posted_at || d.postedTime;
   const description = d.description || d.summary || 'No detailed description was provided by the employer.';
   const skills = Array.isArray(d.skills) ? d.skills : [];

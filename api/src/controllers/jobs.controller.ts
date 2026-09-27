@@ -12,10 +12,8 @@ import type { Request, Response, NextFunction } from 'express';
 
     // @ts-expect-error TODO(ts-migration): type this site
 import adzunaService from '../services/adzuna.service';
-import Resume from '../models/resume.model';
+import prisma from '../config/prisma';
 import { matchUserToJobs } from '../services/job-match-service';
-    // @ts-expect-error TODO(ts-migration): type this site
-import jobSearchService from '../services/job-search-service';
 import {
   formatSearchResponse,
   formatJobDetail,
@@ -122,8 +120,17 @@ const searchJobs = async (req: Request, res: Response) => {
  * }
  */
 const getJobById = async (req: Request, res: Response) => {
-  const { id }      = req.params;
+  const id = String(req.params.id);
   const { country } = req.query;
+
+  if (/^[0-9a-f-]{36}$/i.test(id)) {
+    const row = await prisma.jobListing.findFirst({ where: { id, active: true, archived: false,
+      OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] } });
+    if (!row) return res.status(404).json({ success: false, message: 'Job not found' });
+    return res.json({ success: true, data: { id: row.id, title: row.title, company: row.company,
+      location: row.location, description: row.description, apply_url: row.applyUrl,
+      category: row.category, contract: row.contractType } });
+  }
 
   const job = await adzunaService.getJobById(id, country);
 
@@ -145,15 +152,16 @@ const getCategories = async (req: Request, res: Response) => {
 };
 
 const getRecommendedJobs = async (req: Request, res: Response) => {
-  const userId = req.user._id;
+  const userId = String(req.user?.id || req.user?._id);
 
   // 1. Fetch user's default resume, or fallback to the most recently updated one
-  let resume = await Resume.findOne({ userId, isDefault: true }).lean();
+  let resume = await prisma.resume.findFirst({ where: { userId, isDefault: true, deletedAt: null } });
   if (!resume) {
-    resume = await Resume.findOne({ userId }).sort({ updatedAt: -1 }).lean();
+    resume = await prisma.resume.findFirst({ where: { userId, deletedAt: null }, orderBy: { updatedAt: 'desc' } });
   }
 
-  if (!resume || !resume.parsedData || !Array.isArray(resume.parsedData.skills)) {
+  const parsed = resume?.parsedData as { skills?: unknown } | null;
+  if (!resume || !parsed || !Array.isArray(parsed.skills)) {
     return res.status(200).json({
       success: true,
       message: 'Please upload and parse your resume to get personalized recommendations.',
@@ -161,7 +169,7 @@ const getRecommendedJobs = async (req: Request, res: Response) => {
     });
   }
 
-  const userSkills = resume.parsedData.skills;
+  const userSkills = parsed.skills;
 
   // 2. Query matching jobs matching >= 60%
   const recommendedJobs = await matchUserToJobs(userSkills);

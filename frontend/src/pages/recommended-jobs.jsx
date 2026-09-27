@@ -6,6 +6,7 @@ import toast from 'react-hot-toast';
 import { jobsAPI, resumeAPI } from '@/services/api';
 import { Button, Card, EmptyState, ErrorState, Modal, PageHeader, Pill, SkeletonList } from '@/components/ui';
 import { getErrorMessage } from '@/utils';
+import { safeExternalUrl } from '@/lib/external-url';
 
 function salaryOf(job) {
   const v = job.salaryMin || job.salaryMax;
@@ -80,7 +81,7 @@ export default function RecommendedJobs() {
         <ul className="grid grid-cols-1 gap-3 md:grid-cols-2">
           {jobs.map((job) => {
             const salary = salaryOf(job);
-            const link = job.redirectUrl || job.applyUrl;
+            const link = safeExternalUrl(job.redirectUrl) || safeExternalUrl(job.applyUrl);
             return (
               <li key={keyOf(job)}>
                 <Card className="flex h-full flex-col p-5">

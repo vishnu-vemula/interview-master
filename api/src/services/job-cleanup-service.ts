@@ -1,7 +1,8 @@
 'use strict';
 
 import cron from 'node-cron';
-import Job from '../models/job.model';
+import prisma from '../config/prisma';
+import { clearJobsCache } from '../config/redis';
 import logger from '../config/logger';
 // Lock to avoid overlapping runs
 let isCleaning = false;
@@ -29,23 +30,15 @@ const runJobCleanup = async () => {
     logger.info(`🧹 Job Cleanup Service: Searching for jobs older than ${cutoffDate.toISOString()}...`);
 
     // 2. Perform bulk soft update setting isActive = false
-    const result = await Job.updateMany(
-      {
-        $or: [
-          { postedTime: { $lt: cutoffDate } },
-          { createdAt: { $lt: cutoffDate } }
-        ],
-        isActive: true
-      },
-      {
-        $set: { isActive: false }
-      }
-    );
+    const result = await prisma.jobListing.updateMany({ where: { active: true,
+      OR: [{ postedAt: { lt: cutoffDate } }, { postedAt: null, createdAt: { lt: cutoffDate } }],
+    }, data: { active: false } });
+    if (result.count) await clearJobsCache();
 
-    logger.info(`✅ Job Cleanup Service Completed. Deactivated (isActive = false): ${result.modifiedCount} jobs.`);
+    logger.info(`✅ Job Cleanup Service Completed. Deactivated: ${result.count} jobs.`);
     return {
       success: true,
-      deactivatedCount: result.modifiedCount
+      deactivatedCount: result.count
     };
 
   } catch (error) {

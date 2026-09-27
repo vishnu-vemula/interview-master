@@ -1,36 +1,31 @@
 # Implementation status (2026-09-27)
 
-The application is **not production ready against the supplied acceptance criteria**. PayU and Firebase flows have local tests, and the PostgreSQL migration is valid, but the running application still uses MongoDB for most data. No live PayU sandbox, Cloudinary, Groq, or real Firebase project credentials were supplied.
+The live Express routes now use Firebase ID tokens, PostgreSQL/Prisma users and application records, and a consolidated PostgreSQL job listing. The frontend uses the Firebase SDK for candidate and admin login and does not persist application JWTs. MongoDB code remains only in migration tools and an isolated legacy regression test app; `api/src/server.ts` does not connect to MongoDB. These changes still require full acceptance and provider checks before production deployment.
 
-## Verified locally
+## Local evidence
 
-- API TypeScript build and frontend Vite production builds in legacy and Firebase modes.
-- `npm audit --omit=dev --audit-level=high` reports zero vulnerabilities in both packages.
-- PayU hash and callback validation, tamper rejection, checkout idempotency, captured-payment confirmation, delayed and duplicate notifications, allowance snapshots, refund initiation and confirmed refund tested against disposable MongoDB with a mocked PayU network boundary.
-- Firebase Auth Emulator integration: email verification gate, repeat sign-ins produce one internal Mongo user, invalid and revoked tokens, admin and owner denial, chosen-email takeover denial, authenticated Socket.IO denial, and account deletion.
-- Playwright browser flow: register, verify through the Auth Emulator, sign in, load profile, delete account.
-- PostgreSQL 17.11: the initial Prisma migration applies to a disposable database. It creates 23 foreign keys. Tests verify cross-interview answer rejection and one active default resume per user.
-- MongoDB concurrency test: ten simultaneous session starts produce one active session; concurrent answer saves retain one answer per question.
-- Mocked Groq provider boundary test: malformed question and evaluation output are retryable; generation uses a lease so an abandoned attempt can be reclaimed; repeat requests do not duplicate questions, completion or usage debit. Empty answers and incomplete sessions are rejected.
-- Legacy OAuth callback rejects signed states without the short-lived, HTTP-only browser nonce cookie. Public PayU callback bodies are capped at 32 KB.
-- Idempotent bcrypt identity migration script tested with Firebase Auth Emulator and disposable MongoDB/PostgreSQL. The emulator accepts imported hashes but **cannot validate bcrypt sign-in**; a real Firebase project test remains required.
-- Local `interviewmaster` MongoDB had zero users, resumes, interviews, sessions, plans and payment orders when checked, so there was no local historical data to cut over.
+- Prisma schema and seven migrations cover users, resumes, interviews, questions, sessions, answers, subscriptions, PayU orders/events, quota, jobs/sync, plans, templates, prompts, settings, scraper config/logs, transactions, audit data and durable external cleanup jobs. Ownership foreign keys and unique indexes protect joins and idempotency.
+- Firebase Auth Emulator + PostgreSQL tests exercise verified UID reconciliation, role and account status changes, owner checks, resume storage mock, candidate interview/session retries, quota concurrency, PayU callback/refund idempotency, account deletion, admin permissions/jobs, and Socket.IO access.
+- A disposable migration rehearsal seeded one user and one record of each of 20 related kinds. It mapped all 20, reported zero exceptions/warnings and repeated without duplicate inserts. See [the reconciliation report](MIGRATION_REHEARSAL_REPORT.md). This is a synthetic fixture, not a production data reconciliation.
+- Legacy MongoDB/JWT behaviors are retained in `api/src/legacy-test-app.ts` solely for regression tests of the previous implementation. The live server imports the Firebase/PostgreSQL route implementations.
+- Seven migrations deployed and Prisma Client generated against a clean disposable PostgreSQL database; `prisma migrate status` reported up to date.
+- `npm run typecheck`, `npm run build` and the full sequential `npm test` passed in `api/`: 21 tests, zero failures or skips. The suite includes both live PostgreSQL/Firebase tests and isolated legacy regression tests.
+- `npm run lint` and `npm run build` passed in `frontend/`. `npm run test:e2e` passed: four browser tests, zero failures or skips. They cover registration, email verification, reload/session restoration, forced token refresh, password change/reset, sign-out, account retirement, candidate resume/interview/session/jobs/PayU handoff and admin console access against the local API, Auth Emulator and disposable PostgreSQL.
+- `npm audit --omit=dev --audit-level=high` reported zero vulnerabilities for both packages. `git diff --check` reported no whitespace errors.
 
-## Implemented but awaiting external verification
+## External verification still required
 
-- PayU India hosted checkout, verified webhook/reconciliation, fixed-duration paid passes, refund initiation/status, pricing, candidate result and admin read-only financial reporting. Need sandbox merchant key/salt and public HTTPS callback to run a real transaction.
-- Authenticated Cloudinary PDF uploads and 60-second owner-checked download URLs. Need Cloudinary account to smoke test actual storage and object cleanup. Old public resume objects need re-upload or secure migration.
-- Firebase browser/API path controlled by `VITE_AUTH_PROVIDER=firebase` and `AUTH_PROVIDER=firebase`. Need actual Firebase project, authorized domain, Google sign-in enablement and Admin credentials for non-emulator use. Firebase roles still reside in MongoDB during the bridge phase.
-- Groq generation, evaluation and live follow-ups need configured provider credentials and a browser journey.
+- A real Firebase staging project and authorized domains to verify imported bcrypt passwords, email action links, Google sign-in, Admin SDK credentials, disabled/revoked users and bootstrap.
+- PayU test merchant key/salt plus a public HTTPS callback URL for a real checkout, duplicate/delayed webhook and refund reconciliation.
+- Cloudinary credentials for real private PDF upload/download/delete and migration of legacy public objects.
+- Groq/OpenAI credentials for generation, evaluation and embedding timeouts and recovery.
+- Adzuna app ID/key for a real scheduled job sync, deduplication and stale-listing cleanup check.
+- A restored, frozen copy of actual MongoDB and legacy PostgreSQL jobs data to run the import, compare every source/destination count, investigate warnings, and verify representative ownership joins. The local rehearsal cannot establish actual migration completeness.
+- Browser journeys against real Firebase/PayU/Cloudinary/AI staging providers, a public staging deployment, and a backup/restore drill. The local browser suite uses the Auth Emulator and mocks external provider boundaries. No production database or provider data has been modified by this work.
 
-## Outstanding from the production specification
+## Known risks
 
-- The Prisma schema is a tested **target**, not the live application store. Controllers, billing, jobs, admin, background jobs and authorization still largely use MongoDB. The split legacy PostgreSQL job reader and MongoDB job writer remain. A user-only Firebase/PostgreSQL import exists; related historical documents, payment records and job listings are not migrated.
-- Firebase identity is opt-in while legacy JWT and password routes remain available in legacy mode. Their removal requires the data cutover and real-project migration verification.
-- Redis-backed durable parsing, generation, evaluation and job ingestion with PostgreSQL job state are not implemented. Generation and evaluation still run in request processes; process failure recovery is incomplete.
-- PayU recurring standing instructions, automated renewal, cancellation and customer self-service portal are not implemented. Paid plans are one-time passes. No live sandbox transaction or refund was performed.
-- Account deletion handles current MongoDB candidate data, Cloudinary cleanup and Firebase identity in Firebase mode, with anonymized PayU contact fields. It has no durable retry queue if external storage deletion fails; an administrator must retry a stranded legacy deletion. Operational retention and backup automation need deployment decisions.
-- Full browser acceptance across resume upload, AI, PayU, job sync and admin workflows, staging smoke testing, monitoring, backup restore drill and deployment pipeline remain unverified or unimplemented.
-- A Compose local service definition, a GitHub verification workflow and an operations runbook now exist. Docker was unavailable on this workstation, and the GitHub workflow and restore drill have not run yet.
-
-Do not deploy solely because builds and local tests pass. See [the PayU guide](PAYU.md), [schema contract](POSTGRESQL_SCHEMA.md), and [identity migration guide](USER_MIGRATION.md).
+- Generation/evaluation and resume parsing still run in request processes. PostgreSQL leases make retries safer, but a durable worker and alerting are needed for process crash recovery.
+- Cloudinary and Firebase cleanup are recorded in a PostgreSQL outbox and retried after partial failure. These external operations are not distributed transactions; recurring failures require operator attention.
+- Admin mutation audit rows are currently written after HTTP responses and a persistence failure is logged. A strict audit guarantee would require a transactional audit write in each mutating service.
+- The legacy regression suite is separate from live-route acceptance; passing it does not establish Firebase/PostgreSQL functionality.

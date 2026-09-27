@@ -9,8 +9,7 @@ import { io } from 'socket.io-client';
 import toast from 'react-hot-toast';
 import { interviewAPI, sessionAPI } from '@/services/api';
 import { SOCKET_URL } from '@/lib/axios';
-import { useAuthStore } from '@/store/auth-store';
-import { firebaseMode, getFirebaseToken } from '@/lib/firebase';
+import { getFirebaseToken } from '@/lib/firebase';
 import { BILLING_ME_KEY } from '@/hooks/use-billing';
 import { Alert, Button, Card, ErrorState, LoadingState, Pill, Spinner } from '@/components/ui';
 import { cn, formatDuration, getErrorMessage } from '@/utils';
@@ -147,9 +146,7 @@ export default function InterviewSessionPage() {
   // ── Socket connection ──────────────────────────────────────────
   useEffect(() => {
     const s = io(SOCKET_URL, {
-      auth: firebaseMode
-        ? (callback) => { getFirebaseToken().then((token) => callback({ token })).catch(() => callback({ token: null })); }
-        : { token: useAuthStore.getState().accessToken },
+      auth: (callback) => { getFirebaseToken().then((token) => callback({ token })).catch(() => callback({ token: null })); },
       reconnectionAttempts: 5,
       transports: ['websocket', 'polling'],
     });
@@ -244,7 +241,7 @@ export default function InterviewSessionPage() {
 
   useEffect(() => {
     if (isListening) { recognitionRef.current?.stop(); setIsListening(false); }
-  }, [currentIdx]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [currentIdx]);
 
   // ── Timer ──────────────────────────────────────────────────────
   useEffect(() => {

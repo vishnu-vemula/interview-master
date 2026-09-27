@@ -43,7 +43,7 @@ test('malformed AI output is retryable and generation/complete retries do not do
       return { choices: [{ message: { content: JSON.stringify(data) } }] };
     };
     await mongoose.connect(uri!);
-    const { default: app } = await import('../app.js') as any;
+    const { default: app } = await import('../legacy-test-app.js') as any;
     const server = app.listen(0);
     try {
       await mongoose.connection.dropDatabase();

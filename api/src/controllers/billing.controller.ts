@@ -3,6 +3,16 @@ import Plan from '../models/plan.model';
 import PaymentOrder from '../models/payment-order.model';
 import { createCheckout, getActiveSubscription, handlePaymentNotification, handleRefundNotification, reconcilePayment, reconcileRefund } from '../services/billing/billing.service';
 import { allowanceFor } from '../services/billing/entitlements';
+import logger from '../config/logger';
+
+const checkoutMessages = new Set([
+  'Valid idempotency key required',
+  'A 10-digit phone number is required for PayU checkout',
+  'This plan is unavailable for checkout',
+  'Your current pass is still active',
+  'Idempotency key belongs to another checkout',
+  'This checkout is no longer pending',
+]);
 
 export const listPlans = async (_req: Request, res: Response) => {
   const plans = await Plan.find({ isPublished: true, isArchived: false, currency: 'INR', amountMinor: { $gte: 100 } })
@@ -13,10 +23,16 @@ export const listPlans = async (_req: Request, res: Response) => {
 export const checkout = async (req: Request, res: Response) => {
   try {
     const idempotencyKey = String(req.headers['idempotency-key'] || '');
-    const result = await createCheckout(req.user, String(req.body?.planId || ''), idempotencyKey, String(req.body?.phone || ''));
+    const planId = String(req.body?.planId || '');
+    if (!/^[0-9a-f]{24}$/i.test(planId)) return res.status(400).json({ success: false, message: 'This plan is unavailable for checkout' });
+    const result = await createCheckout(req.user, planId, idempotencyKey, String(req.body?.phone || ''));
     res.status(201).json({ success: true, ...result });
   } catch (error: any) {
-    res.status(400).json({ success: false, message: error.message });
+    if (checkoutMessages.has(error?.message)) {
+      return res.status(400).json({ success: false, message: error.message });
+    }
+    logger.error(`PayU checkout failed: ${error?.name || 'Error'}`);
+    res.status(503).json({ success: false, message: 'Checkout is temporarily unavailable. Please retry.' });
   }
 };
 

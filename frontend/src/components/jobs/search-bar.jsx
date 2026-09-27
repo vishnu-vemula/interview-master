@@ -20,7 +20,7 @@ export default function SearchBar({ onSearch, initialQuery = '', initialLocation
   useEffect(() => {
     if (first.current) { first.current = false; return; } // initial params are already loaded
     onSearch({ q: debouncedQuery, where: debouncedRemote ? 'remote' : debouncedLocation });
-  }, [debouncedQuery, debouncedLocation, debouncedRemote]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [debouncedQuery, debouncedLocation, debouncedRemote]);
 
   const handleSubmit = (e) => {
     e.preventDefault();

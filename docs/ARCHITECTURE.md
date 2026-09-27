@@ -4,32 +4,33 @@
 
 ```mermaid
 flowchart LR
-  Browser[React and Vite browser app] -->|Firebase ID token or legacy JWT| API[Express API]
-  Browser -->|verified socket handshake| Socket[Socket.IO]
-  API --> Mongo[(MongoDB application data)]
+  Browser[React and Firebase client SDK] -->|Firebase ID token| API[Express API]
+  Browser -->|Firebase ID token| Socket[Socket.IO]
+  API -->|Firebase Admin verification| Firebase[Firebase Authentication]
+  Socket -->|Firebase Admin verification| Firebase
+  API --> Prisma[Prisma]
+  Socket --> Prisma
+  Prisma --> Postgres[(PostgreSQL application and jobs data)]
   API --> Redis[(Redis cache)]
-  API --> PayU[PayU hosted checkout and status API]
-  API --> Cloudinary[Private Cloudinary resume objects]
-  API --> Groq[Groq AI]
-  API --> Firebase[Firebase Auth]
-  API -. target schema applied, runtime cutover pending .-> Postgres[(PostgreSQL and Prisma)]
-  Socket --> Mongo
+  API --> PayU[PayU checkout, status and refunds]
+  API --> Cloudinary[Authenticated resume objects]
+  API --> AI[Groq and OpenAI]
 ```
 
-The Firebase branch verifies ID tokens with revocation checks and looks up a MongoDB user by Firebase UID. It never grants a role from the token or links an existing account by email. A user-only migration can also create the matching PostgreSQL row. MongoDB remains the live store for resumes, interviews, sessions, billing, admin and jobs. Some legacy job searches read a separate `jobs` PostgreSQL table and fall back to MongoDB; this is not the final Prisma job-board design.
+The API verifies each Firebase ID token, including revocation, then loads the current PostgreSQL user by the token's UID. Role, account status and ownership come from PostgreSQL. Sign-in and registration reconcile that row idempotently. Billing, usage, admin, interviews, sessions, jobs and Socket.IO use the same Prisma database. Cloudinary and Firebase deletions are recorded in PostgreSQL cleanup jobs before the corresponding application rows are removed, and a periodic worker retries failed provider calls. MongoDB is used only by migration commands and the isolated legacy regression app; it is not connected by the live server.
 
 ## Disposable local verification
 
-Install API and frontend dependencies with `npm ci` in each directory. Start MongoDB, PostgreSQL, Redis and the Firebase Auth Emulator. The Auth Emulator can be started from `api/` with:
+Install Node.js 22 and dependencies with `npm ci` in both `api/` and `frontend/`. Start PostgreSQL and Redis with `docker compose up -d`. For migration tests only, start a disposable MongoDB with `docker compose --profile migration up -d mongo`. Start the Firebase Auth Emulator from `api/`:
 
 ```powershell
 npx --yes firebase-tools@15.31.0 emulators:start --only auth --project demo-interviewmaster
 ```
 
-Set `AUTH_PROVIDER=firebase`, `FIREBASE_PROJECT_ID=demo-interviewmaster`, `FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:9099` for the API; set `VITE_AUTH_PROVIDER=firebase`, `VITE_FIREBASE_PROJECT_ID=demo-interviewmaster`, `VITE_FIREBASE_API_KEY=fake-api-key`, and `VITE_FIREBASE_AUTH_EMULATOR_URL=http://127.0.0.1:9099` for the web app. Supply the remaining placeholder API settings from `api/.env.example` for local tests only. In a real deployment, remove the emulator setting and provide actual Firebase Admin credentials. Never use the demo project or test PayU values in production.
+Set `FIREBASE_PROJECT_ID=demo-interviewmaster` and `FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:9099` for the API. Set `VITE_FIREBASE_PROJECT_ID=demo-interviewmaster`, `VITE_FIREBASE_API_KEY=fake-api-key` and `VITE_FIREBASE_AUTH_EMULATOR_URL=http://127.0.0.1:9099` for the frontend. Use only disposable test credentials for the other API settings described in `api/.env.example`. Set `TEST_DATABASE_URL` to a disposable PostgreSQL database named `interviewmaster_test`, and `TEST_BOOTSTRAP_DATABASE_URL` to a separate `interviewmaster_clean_test` database. Apply `npx prisma migrate deploy` and `npx prisma generate` from `api/` before tests.
 
-Create a disposable PostgreSQL database named `interviewmaster_test`, set `DATABASE_URL` to it and run `npx prisma migrate deploy` from `api/`. Set `TEST_DATABASE_URL` to the same URL. For the integration suite, also set `TEST_MONGO_URI`, `TEST_FIREBASE_MONGO_URI`, `TEST_MIGRATION_MONGO_URI`, and `TEST_SESSION_MONGO_URI` to disposable databases with the exact names shown in their test files. `npm test` drops those MongoDB databases; never point these variables at application data. Run `npm run build` in both packages and `npm run test:e2e` in `frontend/` with the API and Vite dev server running in Firebase mode. The browser test expects API port 5100 and web port 5175 unless edited.
+The legacy regression and migration rehearsal tests also require the `TEST_*_MONGO_URI` settings in `.github/workflows/verify.yml`; these databases are dropped or rewritten by tests. Never point them at application data. Run `npm test`, `npm run typecheck` and `npm run build` from `api/`. Run `npm run lint`, `npm run build` and `npm run test:e2e` from `frontend/`, with the disposable API and Vite server running. Browser tests expect API port 5100 and web port 5175.
 
 ## Production gate
 
-The current readiness probe checks MongoDB, Redis, PayU configuration and Firebase availability in Firebase mode. It does not certify the target PostgreSQL cutover or external PayU/AI/storage journeys. Before production launch, complete the outstanding items in [implementation status](IMPLEMENTATION_STATUS.md), migrate every related record, perform an encrypted backup and restore drill, configure monitoring, run real sandbox payment and refund checks, and run the full candidate and admin browser journeys in staging. Keep the previous application build and data backups until reconciliation is complete.
+Readiness checks PostgreSQL, Redis, PayU configuration and Firebase Admin availability. It does not execute real payments, external AI requests or a migration reconciliation. Before deployment, complete the staging checks in [implementation status](IMPLEMENTATION_STATUS.md), rehearse backup and restore, reconcile every source entity and PayU order, and verify external providers with test credentials. Keep the source backups until cutover results are accepted.
