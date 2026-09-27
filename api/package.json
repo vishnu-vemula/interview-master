@@ -10,7 +10,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit",
     "seed:admin": "tsx src/scripts/seed-admin.ts",
-    "test": "tsx --test src/services/billing/*.test.ts src/services/db/*.test.ts src/services/firebase-identity.test.ts src/services/session-integrity.test.ts src/services/ai-journey.test.ts src/scripts/migrate-users.test.ts",
+    "test": "tsx --test src/services/billing/*.test.ts src/services/db/*.test.ts src/services/firebase-identity.test.ts src/services/session-integrity.test.ts src/services/ai-journey.test.ts src/services/oauth-state.test.ts src/scripts/migrate-users.test.ts",
     "prisma:validate": "prisma validate",
     "prisma:generate": "prisma generate",
     "migrate:users": "tsx src/scripts/migrate-users.ts"

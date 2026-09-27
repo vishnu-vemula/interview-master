@@ -82,6 +82,9 @@ app.use('/api/', rateLimit({
 }));
 
 // ─── Body Parsers ──────────────────────────────────────────────────
+// PayU callbacks are public endpoints. Parse them with a small limit before
+// the general API parser so a forged callback cannot consume 10 MB per call.
+app.use('/api/billing/payu', express.json({ limit: '32kb' }), express.urlencoded({ extended: false, limit: '32kb' }));
 app.use(express.json({ limit: '10mb', verify: (req, _res, body) => { (req as any).rawBody = body; } }));
 app.use(express.urlencoded({ extended: false, limit: '10mb', verify: (req, _res, body) => { (req as any).rawBody = body; } }));
 

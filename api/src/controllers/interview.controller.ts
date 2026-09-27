@@ -5,6 +5,7 @@ import Session from '../models/session.model';
 import AppError from '../utils/app-error';
 import { generateInterviewQuestions } from '../services/ai.service';
 import { reserveGeneration, commitGeneration, releaseGeneration } from '../services/billing/entitlements';
+import { randomUUID } from 'node:crypto';
 
 // ─── POST /api/interviews ─────────────────────────────────────────
 export const createInterview = async (req: Request, res: Response, next: NextFunction) => {
@@ -46,10 +47,6 @@ export const generateQuestions = async (req: Request, res: Response, next: NextF
     return res.status(200).json({ success: true, interview, message: 'Questions already generated.' });
   }
 
-  if (interview.generationStatus === 'generating') {
-    return next(new AppError('Questions are already being generated.', 400));
-  }
-
   // Fetch resume text if linked
   let resumeText = null;
   if (interview.resumeId) {
@@ -57,9 +54,14 @@ export const generateQuestions = async (req: Request, res: Response, next: NextF
     resumeText = resume?.extractedText ?? null;
   }
 
+  const attemptId = randomUUID();
+  const staleBefore = new Date(Date.now() - 10 * 60_000);
   const claimed = await Interview.findOneAndUpdate({ _id: interview._id, userId: req.user._id,
-    generationStatus: { $in: ['pending', 'failed'] } },
-    { $set: { generationStatus: 'generating' } }, { new: true });
+    $or: [{ generationStatus: { $in: ['pending', 'failed'] } },
+      { generationStatus: 'generating', generationStartedAt: { $lt: staleBefore } },
+      { generationStatus: 'generating', generationStartedAt: null, updatedAt: { $lt: staleBefore } }],
+  }, { $set: { generationStatus: 'generating', generationStartedAt: new Date(), generationAttemptId: attemptId } },
+  { new: true });
   if (!claimed) return next(new AppError('Questions are already being generated.', 409));
 
   try {
@@ -72,23 +74,24 @@ export const generateQuestions = async (req: Request, res: Response, next: NextF
       resumeText,
     });
 
-    // @ts-expect-error TODO(ts-migration): type this site
-    interview.questions = questions;
-    interview.generationStatus = 'generated';
-    interview.status = 'ready';
-    await interview.save();
+    const generated = await Interview.findOneAndUpdate({ _id: interview._id, userId: req.user._id,
+      generationStatus: 'generating', generationAttemptId: attemptId },
+    { $set: { questions, generationStatus: 'generated', status: 'ready', generationError: null,
+      generationStartedAt: null, generationAttemptId: null } }, { new: true });
+    if (!generated) return next(new AppError('A newer generation attempt is in progress.', 409));
     await commitGeneration(String(interview._id));
 
     res.status(200).json({
       success: true,
       message: `${questions.length} questions generated successfully.`,
-      interview,
+      interview: generated,
     });
   } catch (err: any) {
-    await releaseGeneration(String(interview._id));
-    interview.generationStatus = 'failed';
-    interview.generationError = 'generation_failed';
-    await interview.save();
+    const failed = await Interview.findOneAndUpdate({ _id: interview._id, userId: req.user._id,
+      generationStatus: 'generating', generationAttemptId: attemptId },
+    { $set: { generationStatus: 'failed', generationError: 'generation_failed',
+      generationStartedAt: null, generationAttemptId: null } });
+    if (failed) await releaseGeneration(String(interview._id));
     return next(new AppError(err.message === 'Interview allowance exhausted. Choose a plan to continue.' ? err.message : 'Question generation failed. Please retry.',
       err.message === 'Interview allowance exhausted. Choose a plan to continue.' ? 402 : 503));
   }

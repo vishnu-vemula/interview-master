@@ -12,11 +12,27 @@ import { firebaseMode } from '../services/firebase-identity.service';
 const RESET_TTL_MS = 30 * 60 * 1000;
 const OAUTH_CODE_TTL_MS = 2 * 60 * 1000;
 const STATE_TTL_MS = 10 * 60 * 1000;
+const OAUTH_NONCE_COOKIE = 'rehearsly_oauth_nonce';
 
 const sha256 = (value: string) => createHash('sha256').update(value).digest('hex');
 const clientUrl = () => (process.env.CLIENT_URL || 'http://localhost:5173').replace(/\/$/, '');
 const apiUrl = () => (process.env.API_PUBLIC_URL || 'http://localhost:5000').replace(/\/$/, '');
-const safeNext = (next: unknown) => (typeof next === 'string' && next.startsWith('/') && !next.startsWith('//') ? next : '/dashboard');
+const safeNext = (next: unknown) => (typeof next === 'string' && next.startsWith('/') &&
+  !next.startsWith('//') && !next.includes('\\') && !/[\u0000-\u001f\u007f]/.test(next) ? next : '/dashboard');
+const oauthCookieOptions = () => ({
+  httpOnly: true as const, sameSite: 'lax' as const,
+  secure: process.env.NODE_ENV === 'production' || apiUrl().startsWith('https://'),
+  path: '/api/auth/oauth',
+});
+const oauthCookieNonce = (req: Request) => {
+  const cookie = req.headers.cookie?.split(';').map(part => part.trim())
+    .find(part => part.startsWith(`${OAUTH_NONCE_COOKIE}=`));
+  return cookie?.slice(OAUTH_NONCE_COOKIE.length + 1) || '';
+};
+const nonceMatches = (actual: string, expected: unknown) => {
+  if (typeof expected !== 'string' || !/^[0-9a-f]{32}$/.test(actual) || !/^[0-9a-f]{32}$/.test(expected)) return false;
+  return timingSafeEqual(Buffer.from(actual, 'hex'), Buffer.from(expected, 'hex'));
+};
 
 async function issueToken(userId: unknown, purpose: 'password_reset' | 'oauth_login', ttlMs: number, meta: unknown = null) {
   const token = randomBytes(32).toString('base64url');
@@ -137,7 +153,9 @@ export const oauthStart = (req: Request, res: Response) => {
   if (firebaseMode() || !configured(p)) {
     return res.redirect(303, `${clientUrl()}/login?oauthError=not_configured`);
   }
-  const state = signState({ p: key, next: safeNext(req.query.next), n: randomBytes(8).toString('hex'), t: Date.now() });
+  const nonce = randomBytes(16).toString('hex');
+  const state = signState({ p: key, next: safeNext(req.query.next), n: nonce, t: Date.now() });
+  res.cookie(OAUTH_NONCE_COOKIE, nonce, { ...oauthCookieOptions(), maxAge: STATE_TTL_MS });
   const url = new URL(p!.authUrl);
   url.search = new URLSearchParams({
     client_id: p!.clientId!, redirect_uri: `${apiUrl()}/api/auth/oauth/${key}/callback`,
@@ -151,11 +169,15 @@ export const oauthCallback = async (req: Request, res: Response) => {
   const key = String(req.params.provider);
   const p = provider(key);
   const fail = (reason: string) => res.redirect(303, `${clientUrl()}/login?oauthError=${encodeURIComponent(reason)}`);
+  const browserNonce = oauthCookieNonce(req);
+  res.clearCookie(OAUTH_NONCE_COOKIE, oauthCookieOptions());
   if (firebaseMode() || !configured(p)) return fail('not_configured');
   if (req.query.error) return fail(req.query.error === 'access_denied' ? 'cancelled' : 'provider_error');
 
   const state = readState(req.query.state);
-  if (!state || state.p !== key || Date.now() - Number(state.t) > STATE_TTL_MS) return fail('invalid_state');
+  const age = Date.now() - Number(state?.t);
+  if (!state || state.p !== key || !Number.isFinite(age) || age < 0 || age > STATE_TTL_MS ||
+    !nonceMatches(browserNonce, state.n)) return fail('invalid_state');
   if (typeof req.query.code !== 'string') return fail('provider_error');
 
   try {

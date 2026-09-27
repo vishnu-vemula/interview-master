@@ -20,7 +20,7 @@ router.post('/:id/answer', [
   body('questionId').isMongoId(),
   body('answerText').optional().isString().isLength({ max: 4000 }),
   body('timeTaken').optional().isInt({ min: 0, max: 86400 }),
-  body('skipped').optional().isBoolean(),
+  body('skipped').optional().isBoolean({ strict: true }),
 ], validate, submitAnswer);
 router.post('/:id/complete', completeSession);
 

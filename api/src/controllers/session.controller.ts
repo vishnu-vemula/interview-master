@@ -52,6 +52,9 @@ export const startSession = async (req: Request, res: Response, next: NextFuncti
 // ─── POST /api/sessions/:id/answer ────────────────────────────────
 export const submitAnswer = async (req: Request, res: Response, next: NextFunction) => {
   const { questionId, answerText, timeTaken, skipped } = req.body;
+  const isSkipped = skipped === true;
+  const text = typeof answerText === 'string' ? answerText.trim() : '';
+  if (!isSkipped && !text) return next(new AppError('Write an answer or explicitly skip this question.', 400));
 
   const session = await Session.findOne({
     _id: req.params.id,
@@ -67,15 +70,15 @@ export const submitAnswer = async (req: Request, res: Response, next: NextFuncti
 
   const activeFilter = { _id: session._id, userId: req.user._id,
     status: { $in: ['started', 'in_progress', 'evaluation_failed'] } };
-  const answerUpdate = { $set: { 'answers.$.answerText': answerText || '',
-    'answers.$.timeTaken': timeTaken || 0, 'answers.$.skipped': Boolean(skipped),
+  const answerUpdate = { $set: { 'answers.$.answerText': isSkipped ? '' : text,
+    'answers.$.timeTaken': timeTaken || 0, 'answers.$.skipped': isSkipped,
     'answers.$.followupUsed': false, status: 'in_progress' } };
   let saved: any = await Session.findOneAndUpdate({ ...activeFilter, 'answers.questionId': questionId },
     answerUpdate, { new: true });
   if (!saved) {
     saved = await Session.findOneAndUpdate({ ...activeFilter, 'answers.questionId': { $ne: questionId } },
       { $push: { answers: { questionId, questionText: question.questionText,
-        answerText: answerText || '', timeTaken: timeTaken || 0, skipped: Boolean(skipped) } },
+        answerText: isSkipped ? '' : text, timeTaken: timeTaken || 0, skipped: isSkipped } },
       $set: { status: 'in_progress' } }, { new: true });
   }
   if (!saved) saved = await Session.findOneAndUpdate({ ...activeFilter, 'answers.questionId': questionId },
@@ -109,6 +112,15 @@ export const completeSession = async (req: Request, res: Response, next: NextFun
     session.evaluationStartedAt = null;
     await session.save();
     return next(new AppError('Interview not found.', 404));
+  }
+  const savedQuestionIds = new Set(session.answers
+    .filter(answer => answer.skipped || answer.answerText?.trim())
+    .map(answer => String(answer.questionId)));
+  if (interview.questions.some(question => !savedQuestionIds.has(String(question._id)))) {
+    session.status = 'in_progress';
+    session.evaluationStartedAt = null;
+    await session.save();
+    return next(new AppError('Answer or skip every question before finishing.', 400));
   }
 
   try {

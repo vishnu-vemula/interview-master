@@ -65,11 +65,18 @@ test('malformed AI output is retryable and generation/complete retries do not do
       assert.equal(response.status, 503);
       assert.equal((await Interview.findById(interviewId))?.generationStatus, 'failed');
       assert.equal((await UsageCounter.findOne({ userId: user._id }))?.units, 0);
+      // Simulate an API process dying after claiming generation. A later retry
+      // must be able to reclaim the stale lease and keep one usage debit.
+      await Interview.updateOne({ _id: interviewId }, { $set: {
+        generationStatus: 'generating', generationStartedAt: new Date(Date.now() - 11 * 60_000),
+        generationAttemptId: 'abandoned-attempt',
+      } });
       malformedQuestions = false;
       response = await request(`/interviews/${interviewId}/generate`);
       assert.equal(response.status, 200);
       const interview: any = await Interview.findById(interviewId);
       assert.equal(interview.questions.length, 3);
+      assert.equal(interview.generationAttemptId, null);
       response = await request(`/interviews/${interviewId}/generate`);
       assert.equal(response.status, 200);
       assert.equal((await UsageCounter.findOne({ userId: user._id }))?.units, 1);
