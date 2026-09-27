@@ -22,7 +22,7 @@ import { query, param, body, validationResult } from 'express-validator';
 import * as jobsController from '../controllers/jobs.controller';
 import * as jobsCache from '../utils/jobs-cache';
 import { circuitBreaker } from '../utils/adzuna-client';
-import { protect } from '../middleware/auth.middleware';
+import { protectPostgres } from '../middleware/postgres-auth.middleware';
 
 const router = Router();
 
@@ -131,7 +131,7 @@ router.get(
 
 router.get(
   '/recommended',
-  protect,
+  protectPostgres,
   jobsController.getRecommendedJobs
 );
 
@@ -186,7 +186,7 @@ router.get(
   [
     param('id')
       .notEmpty().withMessage('Job id is required')
-      .isNumeric().withMessage('Job id must be numeric'),
+      .custom(value => /^\d+$/.test(value) || /^[0-9a-f-]{36}$/i.test(value)).withMessage('Invalid job id'),
     query('country')
       .optional()
       .isAlpha()

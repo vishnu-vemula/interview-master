@@ -1,0 +1,118 @@
+name: Verify
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      mongo:
+        image: mongo:7
+        ports:
+          - 27017:27017
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: interviewmaster
+          POSTGRES_PASSWORD: local_ci_only
+          POSTGRES_DB: interviewmaster_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U interviewmaster -d interviewmaster_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      NODE_ENV: test
+      MONGO_URI: mongodb://127.0.0.1:27017/interviewmaster_firebase_browser_test
+      TEST_MONGO_URI: mongodb://127.0.0.1:27017/interviewmaster_billing_test
+      TEST_FIREBASE_MONGO_URI: mongodb://127.0.0.1:27017/interviewmaster_firebase_test
+      TEST_MIGRATION_MONGO_URI: mongodb://127.0.0.1:27017/interviewmaster_migration_test
+      TEST_SESSION_MONGO_URI: mongodb://127.0.0.1:27017/interviewmaster_session_test
+      TEST_AI_MONGO_URI: mongodb://127.0.0.1:27017/interviewmaster_ai_test
+      TEST_RELATED_MONGO_URI: mongodb://127.0.0.1:27017/interviewmaster_related_test
+      TEST_RESUME_MONGO_URI: mongodb://127.0.0.1:27017/interviewmaster_resume_test
+      DATABASE_URL: postgresql://interviewmaster:local_ci_only@127.0.0.1:5432/interviewmaster_test
+      TEST_DATABASE_URL: postgresql://interviewmaster:local_ci_only@127.0.0.1:5432/interviewmaster_test
+      TEST_BOOTSTRAP_DATABASE_URL: postgresql://interviewmaster:local_ci_only@127.0.0.1:5432/interviewmaster_clean_test
+      FIREBASE_PROJECT_ID: demo-interviewmaster
+      FIREBASE_AUTH_EMULATOR_HOST: 127.0.0.1:9099
+      AUTH_PROVIDER: legacy
+      JWT_SECRET: ci-access-secret-at-least-32-characters
+      JWT_REFRESH_SECRET: ci-refresh-secret-at-least-32-characters
+      GROQ_API_KEY: test-groq-key
+      CLOUDINARY_CLOUD_NAME: test-cloud
+      CLOUDINARY_API_KEY: test-cloud-key
+      CLOUDINARY_API_SECRET: test-cloud-secret
+      CLIENT_URL: http://localhost:5175
+      API_PUBLIC_URL: http://localhost:5100
+      PAYU_ENV: test
+      PAYU_MERCHANT_KEY: test-merchant
+      PAYU_MERCHANT_SALT: test-salt
+      REDIS_ENABLED: 'false'
+      PORT: '5100'
+      VITE_API_URL: http://localhost:5100/api
+      VITE_AUTH_PROVIDER: firebase
+      VITE_FIREBASE_API_KEY: fake-api-key
+      VITE_FIREBASE_AUTH_DOMAIN: demo-interviewmaster.firebaseapp.com
+      VITE_FIREBASE_PROJECT_ID: demo-interviewmaster
+      VITE_FIREBASE_AUTH_EMULATOR_URL: http://127.0.0.1:9099
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            api/package-lock.json
+            frontend/package-lock.json
+      - name: Install
+        run: |
+          npm ci --prefix api
+          npm ci --prefix frontend
+      - name: Check builds, dependencies and schema
+        run: |
+          node - <<'NODE'
+          const { Client } = require('./api/node_modules/pg');
+          (async () => {
+            const client = new Client({ connectionString: 'postgresql://interviewmaster:local_ci_only@127.0.0.1:5432/postgres' });
+            await client.connect();
+            await client.query('CREATE DATABASE interviewmaster_clean_test');
+            await client.end();
+          })().catch(error => { console.error(error); process.exitCode = 1; });
+          NODE
+          npm run build --prefix api
+          npm run lint --prefix frontend
+          npm run build --prefix frontend
+          npm audit --prefix api --omit=dev --audit-level=high
+          npm audit --prefix frontend --omit=dev --audit-level=high
+          npm run prisma:validate --prefix api
+          cd api && npx prisma migrate deploy && npx prisma generate
+          DATABASE_URL="$TEST_BOOTSTRAP_DATABASE_URL" npx prisma migrate deploy
+      - name: Start Firebase Auth Emulator
+        run: |
+          cd api
+          npx --yes firebase-tools@15.31.0 emulators:start --only auth --project demo-interviewmaster > /tmp/firebase-auth.log 2>&1 &
+          for i in $(seq 1 60); do curl -fsS http://127.0.0.1:9099/emulator/v1/projects/demo-interviewmaster/oobCodes >/dev/null && exit 0; sleep 2; done
+          cat /tmp/firebase-auth.log
+          exit 1
+      - name: API integration tests
+        run: npm test --prefix api
+      - name: Browser journey
+        run: |
+          cd frontend
+          npx playwright install --with-deps chromium
+          cd ..
+          (cd api && AUTH_PROVIDER=firebase npm run dev > /tmp/interview-api.log 2>&1) &
+          (cd frontend && npm run dev -- --host 127.0.0.1 --port 5175 > /tmp/interview-web.log 2>&1) &
+          for i in $(seq 1 60); do curl -fsS http://127.0.0.1:5100/api/ready >/dev/null && curl -fsS http://127.0.0.1:5175/ >/dev/null && break; sleep 2; done
+          curl -fsS http://127.0.0.1:5100/api/ready
+          cd frontend && npm run test:e2e -- --reporter=line
+      - name: Print service logs on failure
+        if: failure()
+        run: |
+          tail -100 /tmp/firebase-auth.log 2>/dev/null || true
+          tail -100 /tmp/interview-api.log 2>/dev/null || true
+          tail -100 /tmp/interview-web.log 2>/dev/null || true

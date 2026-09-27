@@ -9,10 +9,9 @@ import { io } from 'socket.io-client';
 import toast from 'react-hot-toast';
 import { interviewAPI, sessionAPI } from '@/services/api';
 import { SOCKET_URL } from '@/lib/axios';
-import { useAuthStore } from '@/store/auth-store';
-import { firebaseMode, getFirebaseToken } from '@/lib/firebase';
+import { getFirebaseToken } from '@/lib/firebase';
 import { BILLING_ME_KEY } from '@/hooks/use-billing';
-import { Alert, Button, Card, ErrorState, LoadingState, Pill, Spinner, useConfirm } from '@/components/ui';
+import { Alert, Button, Card, ErrorState, LoadingState, Pill, Spinner } from '@/components/ui';
 import { cn, formatDuration, getErrorMessage } from '@/utils';
 
 const AUTO_READ_KEY = 'rehearsly-auto-read';
@@ -20,7 +19,7 @@ const CATEGORY_LABEL = { technical: 'Technical', behavioral: 'Behavioral', situa
 
 /* ── Generate-questions state (interview exists but has no questions yet) ── */
 function GenerateState({ interview, onGenerated }) {
-  const [busy, setBusy] = useState(interview.generationStatus === 'generating');
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const queryClient = useQueryClient();
 
@@ -45,12 +44,14 @@ function GenerateState({ interview, onGenerated }) {
       </span>
       <p className="mono-label mt-6 text-muted">{interview.jobTitle}</p>
       <h1 className="mt-3 text-[34px] font-medium leading-tight tracking-tight2">
-        {busy ? 'Writing your questions…' : interview.generationStatus === 'failed' ? 'Generation didn’t finish' : 'Questions not generated yet'}
+        {busy ? 'Writing your questions…' : interview.generationStatus === 'generating' ? 'Question generation is in progress' : interview.generationStatus === 'failed' ? 'Generation didn’t finish' : 'Questions not generated yet'}
       </h1>
       <p className="mt-3 text-[15.5px] leading-relaxed text-muted-strong">
         {busy
           ? 'We’re mapping the job description to your experience. This usually takes 5–20 seconds.'
-          : 'Generate the questions for this interview to start practising. Generating uses one interview from your allowance.'}
+          : interview.generationStatus === 'generating'
+            ? 'If generation was interrupted, try again. The server will safely resume a stale attempt.'
+            : 'Generate the questions for this interview to start practising. Generating uses one interview from your allowance.'}
       </p>
       {error && (
         <Alert tone="error" icon={AlertCircle} className="mt-6 text-left" title={error.status === 402 ? 'Interview allowance used up' : 'That didn’t work'}>
@@ -59,8 +60,8 @@ function GenerateState({ interview, onGenerated }) {
       )}
       <div className="mt-8 flex flex-wrap justify-center gap-2">
         <Button to="/interviews" variant="ghost" icon={ArrowLeft}>Back to interviews</Button>
-        <Button variant="lime" icon={error ? RotateCw : Sparkles} loading={busy} onClick={run}>
-          {error ? 'Try again' : 'Generate questions'}
+        <Button variant="lime" icon={error || interview.generationStatus === 'generating' ? RotateCw : Sparkles} loading={busy} onClick={run}>
+          {error || interview.generationStatus === 'generating' ? 'Try again' : 'Generate questions'}
         </Button>
       </div>
     </div>
@@ -70,7 +71,6 @@ function GenerateState({ interview, onGenerated }) {
 export default function InterviewSessionPage() {
   const { id: interviewId } = useParams();
   const navigate = useNavigate();
-  const confirm = useConfirm();
   const queryClient = useQueryClient();
 
   const [interview, setInterview] = useState(null);
@@ -146,9 +146,7 @@ export default function InterviewSessionPage() {
   // ── Socket connection ──────────────────────────────────────────
   useEffect(() => {
     const s = io(SOCKET_URL, {
-      auth: firebaseMode
-        ? (callback) => { getFirebaseToken().then((token) => callback({ token })).catch(() => callback({ token: null })); }
-        : { token: useAuthStore.getState().accessToken },
+      auth: (callback) => { getFirebaseToken().then((token) => callback({ token })).catch(() => callback({ token: null })); },
       reconnectionAttempts: 5,
       transports: ['websocket', 'polling'],
     });
@@ -243,7 +241,7 @@ export default function InterviewSessionPage() {
 
   useEffect(() => {
     if (isListening) { recognitionRef.current?.stop(); setIsListening(false); }
-  }, [currentIdx]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [currentIdx]);
 
   // ── Timer ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -255,7 +253,11 @@ export default function InterviewSessionPage() {
   const saveAnswer = useCallback(async (skipped = false) => {
     if (!session || !currentQuestion) return false;
     const text = answerText.trim();
-    if (!text && !skipped) return true; // nothing to save
+    if (!text && !skipped) {
+      if (savedAnswers[currentQuestion._id]) return true;
+      toast.error('Write an answer or choose Skip question.');
+      return false;
+    }
     setSubmitting(true);
     try {
       await sessionAPI.submitAnswer(session._id, {
@@ -276,7 +278,7 @@ export default function InterviewSessionPage() {
     } finally {
       setSubmitting(false);
     }
-  }, [session, currentQuestion, answerText, startTime]);
+  }, [session, currentQuestion, answerText, startTime, savedAnswers]);
 
   const goTo = (idx) => {
     if (idx < 0 || idx >= totalQuestions || idx === currentIdx) return;
@@ -295,19 +297,25 @@ export default function InterviewSessionPage() {
     if (ok) goTo(currentIdx + 1);
   };
 
+  const skipLastQuestion = async () => {
+    if (await saveAnswer(true)) setAnswerText('');
+  };
+
+  const navigateToQuestion = async (idx) => {
+    if (idx > currentIdx && !await saveAnswer(false)) return;
+    goTo(idx);
+  };
+
   const handleComplete = async () => {
     const ok = await saveAnswer(false);
     if (!ok) return;
     const answeredIds = new Set(Object.keys(savedAnswers));
     if (answerText.trim() && currentQuestion) answeredIds.add(currentQuestion._id);
-    const unanswered = questions.filter((q) => !answeredIds.has(q._id)).length;
-    if (unanswered > 0) {
-      const go = await confirm({
-        title: 'Finish with unanswered questions?',
-        description: `${unanswered} question${unanswered === 1 ? ' hasn’t' : 's haven’t'} been answered or skipped and won’t be scored.`,
-        confirmLabel: 'Finish and score',
-      });
-      if (!go) return;
+    const firstUnanswered = questions.findIndex((q) => !answeredIds.has(q._id));
+    if (firstUnanswered >= 0) {
+      toast.error('Answer or skip every question before finishing.');
+      goTo(firstUnanswered);
+      return;
     }
     setCompleting(true);
     setCompleteError(null);
@@ -501,11 +509,9 @@ export default function InterviewSessionPage() {
                 Previous
               </Button>
               <div className="flex flex-col gap-2 sm:flex-row">
-                {!isLast && (
-                  <Button variant="soft" icon={SkipForward} onClick={() => handleNext(true)} disabled={submitting || completing}>
-                    Skip
-                  </Button>
-                )}
+                <Button variant="soft" icon={SkipForward} onClick={() => isLast ? skipLastQuestion() : handleNext(true)} disabled={submitting || completing}>
+                  Skip question
+                </Button>
                 {isLast ? (
                   <Button variant="lime" cta onClick={handleComplete} loading={completing} disabled={submitting} className="py-[6px]">
                     {completing ? 'Scoring your answers…' : completeError ? 'Retry scoring' : 'Finish & get report'}
@@ -566,7 +572,8 @@ export default function InterviewSessionPage() {
                   <li key={q._id}>
                     <button
                       type="button"
-                      onClick={() => goTo(i)}
+                      onClick={() => navigateToQuestion(i)}
+                      disabled={submitting || completing}
                       aria-label={`Question ${i + 1}${a ? (a.skipped ? ', skipped' : ', answered') : ''}`}
                       aria-current={i === currentIdx ? 'step' : undefined}
                       className={cn(

@@ -1,25 +1,14 @@
 'use strict';
 
-import { Pool } from 'pg';
 import { getClient } from '../config/redis';
-
-// Initialize PostgreSQL Pool using environment variables
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL || process.env.PG_URL,
-  host: process.env.PGHOST,
-  user: process.env.PGUSER,
-  password: process.env.PGPASSWORD,
-  database: process.env.PGDATABASE,
-  port: parseInt(process.env.PGPORT, 10) || 5432,
-  ssl: process.env.PGSSL === 'true' ? { rejectUnauthorized: false } : false
-});
+import prisma from '../config/prisma';
 
 const presentDbJob = (job) => {
   const salaryMin = job.salaryMin !== undefined ? job.salaryMin : job.salary_min;
   const salaryMax = job.salaryMax !== undefined ? job.salaryMax : job.salary_max;
-  const redirectUrl = job.redirectUrl || job.redirect_url || job.url || '';
-  const postedTime = job.postedTime || job.posted_time || job.createdAt || job.created_at || null;
-  const isActive = job.isActive !== undefined ? job.isActive : (job.is_active !== undefined ? job.is_active : true);
+  const redirectUrl = job.applyUrl || job.redirectUrl || job.redirect_url || job.url || '';
+  const postedTime = job.postedAt || job.postedTime || job.posted_time || job.createdAt || job.created_at || null;
+  const isActive = job.active ?? job.isActive ?? job.is_active ?? true;
 
   let salaryStr = 'Competitive Salary';
   if (salaryMin || salaryMax) {
@@ -51,7 +40,7 @@ const presentDbJob = (job) => {
   }
 
   return {
-    id: job.adzunaId || job.adzuna_id || (job._id ? job._id.toString() : (job.id ? job.id.toString() : '')),
+    id: job.id ? job.id.toString() : (job.externalId || job.adzunaId || job.adzuna_id || ''),
     title: job.title || '',
     company: job.company || 'Not Specified',
     location: job.location || 'Remote',
@@ -65,6 +54,7 @@ const presentDbJob = (job) => {
     salaryMin: salaryMin || null,
     salaryMax: salaryMax || null,
     contractType: job.contractType || job.contract_type || null,
+    source: typeof job.source === 'object' ? job.source?.name : job.source,
     skills: job.skills || []
   };
 };
@@ -94,27 +84,12 @@ async function getAllJobs() {
     }
   }
 
-  // 2. Cache miss: Query PostgreSQL database
+  // 2. Cache miss: query the application Prisma schema.
   console.log(`[Redis] Cache MISS (data served from Database) for key: ${cacheKey}`);
-  let jobs = [];
-  try {
-    if (!process.env.DATABASE_URL && !process.env.PG_URL && !process.env.PGHOST) {
-      throw new Error('PostgreSQL environment variables are not configured');
-    }
-    const res = await pool.query('SELECT * FROM jobs');
-    jobs = res.rows.map(presentDbJob);
-  } catch (err) {
-    console.warn('[PostgresJobService] PostgreSQL query failed, falling back to MongoDB:', (err as Error).message);
-    try {
-      // Lazy require: only touch the Mongo model when the PG path fails
-      const Job = require('../models/job.model').default;
-      const dbJobs = await Job.find({ isActive: true }).sort({ postedTime: -1, createdAt: -1 }).lean();
-      jobs = dbJobs.map(presentDbJob);
-    } catch (dbErr) {
-      console.error('[PostgresJobService] MongoDB fallback also failed:', (dbErr as Error).message);
-      throw err; // rethrow original PG error
-    }
-  }
+  const rows = await prisma.jobListing.findMany({ where: {
+    active: true, archived: false, OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+  }, include: { source: { select: { name: true } } }, orderBy: [{ postedAt: 'desc' }, { createdAt: 'desc' }] });
+  const jobs = rows.map(presentDbJob);
 
   // 3. Store the result in Redis with a 2-hour TTL
   if (redis && jobs.length > 0) {
@@ -249,5 +224,4 @@ async function getFilteredJobs({
 export {
   getAllJobs,
   getFilteredJobs,
-  pool
 };

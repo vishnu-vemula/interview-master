@@ -1,6 +1,7 @@
 import { Banknote, Building2, ExternalLink, MapPin } from 'lucide-react';
 import { Pill } from '@/components/ui';
 import { CONTRACT_TYPES } from './filters-panel';
+import { safeExternalUrl } from '@/lib/external-url';
 
 const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -25,7 +26,7 @@ export const contractLabel = (v) => CONTRACT_TYPES.find((c) => c.value === v)?.l
 
 export default function JobCard({ job, onClick, searchQuery = '' }) {
   const { title, company, location, salary, summary, apply_url: applyUrl, url, contractType } = job;
-  const link = applyUrl || url;
+  const link = safeExternalUrl(applyUrl) || safeExternalUrl(url);
 
   return (
     <article className="card card-interactive group relative flex h-full flex-col p-5">

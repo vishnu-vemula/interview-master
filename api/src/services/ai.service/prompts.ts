@@ -2,10 +2,10 @@ import groq from '../../config/groq';
 import logger from '../../config/logger';
 import { extractContextViaRAG, buildSemanticChunks, createAndStoreEmbeddings, retrieveContextForTopic } from '../rag.service';
 import { optimizeQuery } from '../optimizer.service';
-import SystemPrompt from '../../models/system-prompt.model';
+import prisma from '../../config/prisma';
 export const getActivePrompt = async (category, defaultVal) => {
   try {
-    const promptDoc = await SystemPrompt.findOne({ category });
+    const promptDoc = await prisma.systemPrompt.findUnique({ where: { category } });
     return promptDoc ? promptDoc.content : defaultVal;
   } catch {
     return defaultVal;

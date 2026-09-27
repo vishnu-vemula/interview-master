@@ -74,6 +74,8 @@ const interviewSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    generationStartedAt: { type: Date, default: null },
+    generationAttemptId: { type: String, default: null },
   },
   { timestamps: true }
 );

@@ -1,6 +1,5 @@
 import { initializeApp, applicationDefault, getApps } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
-import User from '../models/user.model';
 import AppError from '../utils/app-error';
 
 export const firebaseMode = () => process.env.AUTH_PROVIDER === 'firebase';
@@ -25,6 +24,9 @@ export async function verifyFirebaseToken(token: string) {
 }
 
 export async function resolveFirebaseUser(token: string, create = false) {
+  // The Mongo bridge is loaded only by the isolated legacy regression app.
+  const loaded: any = await import('../models/user.model.js');
+  const User = loaded.default?.default || loaded.default || loaded;
   const decoded = await verifyFirebaseToken(token);
   let user: any = await User.findOne({ firebaseUid: decoded.uid }).select('+firebaseUid');
   if (!user && create) {
@@ -52,12 +54,12 @@ export async function resolveFirebaseUser(token: string, create = false) {
 }
 
 export async function deleteFirebaseIdentity(uid: string) {
-  await authClient().deleteUser(uid);
+  try { await authClient().deleteUser(uid); }
+  catch (error: any) { if (error?.code !== 'auth/user-not-found') throw error; }
 }
 
 let readiness = { checkedAt: 0, ready: false };
 export async function firebaseIsReady() {
-  if (!firebaseMode()) return true;
   if (Date.now() - readiness.checkedAt < 15_000) return readiness.ready;
   try {
     await authClient().listUsers(1);

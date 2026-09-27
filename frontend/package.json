@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "test:e2e": "playwright test tests/firebase-auth.spec.js",
+    "test:e2e": "playwright test tests/firebase-auth.spec.js tests/firebase-session.spec.js tests/postgres-journeys.spec.js --workers=1",
     "preview": "vite preview",
     "lint": "eslint . --ext js,jsx --report-unused-disable-directives --max-warnings 0"
   },

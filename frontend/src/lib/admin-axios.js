@@ -1,153 +1,25 @@
-/**
- * lib/adminAxios.js
- *
- * Dedicated Axios instance for admin API calls.
- * Completely separate from the user axios (lib/axios.js) to prevent
- * token mixing between admin and regular user sessions.
- *
- * Features:
- *  - Reads admin token from 'ai-admin-auth' localStorage key
- *  - Auto-refresh on 401 using admin refresh token
- *  - Dispatches 'admin:logout' event on refresh failure
- *  - Request queue: concurrent 401s wait for a single refresh
- */
-
 import axios from 'axios';
-import { auth, firebaseMode, getFirebaseToken } from './firebase';
+import { auth, getFirebaseToken } from './firebase';
 import { signOut } from 'firebase/auth';
 
-const STORAGE_KEY = 'ai-admin-auth';
-const BASE_URL    = import.meta.env.VITE_API_URL || '/api';
-
-// ─── Axios Instance ───────────────────────────────────────────────
-const adminApi = axios.create({
-  baseURL: BASE_URL,
-  timeout: 30_000,
-  headers: { 'Content-Type': 'application/json' },
+const adminApi = axios.create({ baseURL: import.meta.env.VITE_API_URL || '/api',
+  timeout: 30_000, headers: { 'Content-Type': 'application/json' } });
+export const getAdminAuth = () => ({});
+export const setAdminAccessToken = () => {};
+export const clearAdminAuth = () => {};
+adminApi.interceptors.request.use(async config => {
+  const token = await getFirebaseToken();
+  if (token) config.headers.Authorization = `Bearer ${token}`;
+  return config;
 });
-
-// ─── Helper: read admin auth from localStorage ────────────────────
-export const getAdminAuth = () => {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : {};
-  } catch {
-    return {};
-  }
-};
-
-// ─── Helper: update access token in localStorage ──────────────────
-export const setAdminAccessToken = (token) => {
-  try {
-    const current = getAdminAuth();
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...current, accessToken: token }));
-  } catch { /* ignore */ }
-};
-
-// ─── Helper: clear admin auth from localStorage ───────────────────
-export const clearAdminAuth = () => {
-  localStorage.removeItem(STORAGE_KEY);
-};
-
-// ─── Request Interceptor: attach Bearer token ─────────────────────
-adminApi.interceptors.request.use(
-  async (config) => {
-    if (firebaseMode) {
-      const token = await getFirebaseToken();
-      if (token) config.headers.Authorization = `Bearer ${token}`;
-      return config;
-    }
-    const { accessToken } = getAdminAuth();
-    if (accessToken) {
-      config.headers.Authorization = `Bearer ${accessToken}`;
-    }
-    return config;
-  },
-  (error) => Promise.reject(error)
-);
-
-// ─── Response Interceptor: auto-refresh on 401 ───────────────────
-let isRefreshing = false;
-let failedQueue  = [];
-
-const processQueue = (error, token = null) => {
-  failedQueue.forEach((p) => (error ? p.reject(error) : p.resolve(token)));
-  failedQueue = [];
-};
-
-adminApi.interceptors.response.use(
-  (response) => response,
-
-  async (error) => {
-    const originalRequest = error.config;
-
-    if (firebaseMode) {
-      if (error.response?.status !== 401 || !originalRequest || originalRequest._retry) {
-        return Promise.reject(error);
-      }
-      originalRequest._retry = true;
-      try {
-        const token = await getFirebaseToken(true);
-        if (!token) throw error;
-        originalRequest.headers.Authorization = `Bearer ${token}`;
-        return adminApi(originalRequest);
-      } catch {
-        await signOut(auth).catch(() => {});
-        return Promise.reject(error);
-      }
-    }
-
-    if (
-      error.response?.status !== 401 ||
-      !originalRequest ||
-      originalRequest._retry ||
-      /\/admin\/auth\/(login|refresh|logout)/.test(originalRequest.url || '')
-    ) {
-      return Promise.reject(error);
-    }
-
-    // Queue concurrent requests while refreshing
-    if (isRefreshing) {
-      return new Promise((resolve, reject) => {
-        failedQueue.push({ resolve, reject });
-      }).then((token) => {
-        originalRequest.headers.Authorization = `Bearer ${token}`;
-        return adminApi(originalRequest);
-      });
-    }
-
-    originalRequest._retry = true;
-    isRefreshing = true;
-
-    const { refreshToken } = getAdminAuth();
-
-    if (!refreshToken) {
-      clearAdminAuth();
-      window.dispatchEvent(new Event('admin:logout'));
-      isRefreshing = false;
-      return Promise.reject(error);
-    }
-
-    try {
-      const { data } = await axios.post(`${BASE_URL}/admin/auth/refresh`, { refreshToken });
-      const newToken = data.accessToken;
-
-      setAdminAccessToken(newToken);
-      window.dispatchEvent(new CustomEvent('admin:token-refreshed', { detail: { accessToken: newToken } }));
-      processQueue(null, newToken);
-      originalRequest.headers.Authorization = `Bearer ${newToken}`;
-      return adminApi(originalRequest);
-
-    } catch (refreshError) {
-      processQueue(refreshError, null);
-      clearAdminAuth();
-      window.dispatchEvent(new Event('admin:logout'));
-      return Promise.reject(refreshError);
-
-    } finally {
-      isRefreshing = false;
-    }
-  }
-);
-
+adminApi.interceptors.response.use(response => response, async error => {
+  const original = error.config;
+  if (error.response?.status !== 401 || !original || original._retry) return Promise.reject(error);
+  original._retry = true;
+  try { const token = await getFirebaseToken(true);
+    if (!token) throw error;
+    original.headers.Authorization = `Bearer ${token}`;
+    return adminApi(original);
+  } catch { await signOut(auth).catch(() => {}); return Promise.reject(error); }
+});
 export default adminApi;

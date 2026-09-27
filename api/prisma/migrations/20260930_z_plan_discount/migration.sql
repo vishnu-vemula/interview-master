@@ -1,0 +1,3 @@
+-- AlterTable
+ALTER TABLE "Plan" ALTER COLUMN "directDiscount" SET DEFAULT 0,
+ALTER COLUMN "directDiscount" SET DATA TYPE DOUBLE PRECISION;

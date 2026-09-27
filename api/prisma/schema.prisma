@@ -100,6 +100,11 @@ model User {
   firebaseUid     String             @unique
   email           String             @unique
   displayName     String
+  avatar          String?
+  credits         Int                @default(10)
+  isPremium       Boolean            @default(false)
+  lastLogin       DateTime?
+  totalSessions   Int                @default(0)
   role            UserRole           @default(candidate)
   status          UserStatus         @default(active)
   createdAt       DateTime           @default(now())
@@ -114,6 +119,12 @@ model User {
   billingCustomer BillingCustomer?
   paymentOrders   PaymentOrder[]
   backgroundJobs  BackgroundJob[]
+  postedJobs      JobListing[]       @relation("JobPoster")
+  postedPlans     Plan[]             @relation("PlanPoster")
+  templates       InterviewTemplate[]
+  promptEdits     SystemPrompt[]     @relation("PromptEditor")
+  transactions    LegacyTransaction[]
+  usageCounters   UsageCounter[]
 
   @@index([status, createdAt])
 }
@@ -124,11 +135,16 @@ model Resume {
   user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   storageKey    String        @unique
   originalName  String
+  fileName      String?
+  format        String              @default("pdf")
+  deliveryType  String              @default("authenticated")
+  legacyFileUrl String?
   contentType   String
   sizeBytes     Int
   parseStatus   ParseStatus   @default(pending)
   extractedText String?
   parsedData    Json?
+  isParsed      Boolean       @default(false)
   isDefault     Boolean       @default(false)
   createdAt     DateTime      @default(now())
   updatedAt     DateTime      @updatedAt
@@ -137,6 +153,7 @@ model Resume {
   interviews    Interview[]
 
   @@index([userId, deletedAt, createdAt])
+  @@unique([id, userId])
 }
 
 model ResumeChunk {
@@ -160,13 +177,16 @@ model Interview {
   userId           String             @db.Uuid
   user             User               @relation(fields: [userId], references: [id], onDelete: Cascade)
   resumeId         String?            @db.Uuid
-  resume           Resume?            @relation(fields: [resumeId], references: [id], onDelete: SetNull)
+  resume           Resume?            @relation(fields: [resumeId, userId], references: [id, userId], onDelete: Restrict)
   resumeSnapshot   Json?
   jobTitle         String
   company          String?
   jobDescription   String
   experienceLevel  String
   questionCount    Int
+  questionTypes    String[]           @default([])
+  generationStartedAt DateTime?
+  generationAttemptId String?
   generationStatus GenerationStatus   @default(pending)
   status           InterviewStatus    @default(draft)
   errorCode        String?
@@ -178,6 +198,7 @@ model Interview {
 
   @@index([userId, createdAt])
   @@index([resumeId])
+  @@unique([id, userId])
 }
 
 model Question {
@@ -203,11 +224,12 @@ model Session {
   userId                 String             @db.Uuid
   user                   User               @relation(fields: [userId], references: [id], onDelete: Cascade)
   interviewId            String             @db.Uuid
-  interview              Interview          @relation(fields: [interviewId], references: [id], onDelete: Cascade)
+  interview              Interview          @relation(fields: [interviewId, userId], references: [id, userId], onDelete: Cascade)
   status                 SessionStatus      @default(started)
   currentQuestionOrdinal Int                @default(0)
   startedAt              DateTime           @default(now())
   completedAt            DateTime?
+  evaluationStartedAt    DateTime?
   durationSeconds        Int                @default(0)
   overallScore           Int?
   feedback               Json?
@@ -231,6 +253,9 @@ model Answer {
   questionId       String           @db.Uuid
   question         Question         @relation(fields: [questionId, interviewId], references: [id, interviewId], onDelete: Restrict)
   text             String
+  questionText     String?
+  answerAudio      String?
+  followupUsed     Boolean          @default(false)
   skipped          Boolean          @default(false)
   timeTakenSeconds Int              @default(0)
   submittedAt      DateTime         @default(now())
@@ -247,6 +272,15 @@ model Plan {
   code            String          @unique
   name            String
   description     String
+  durationDays    Int             @default(30)
+  credits         Int             @default(10)
+  features        String[]        @default([])
+  coupons         Json?
+  directDiscount  Float           @default(0)
+  isPublished     Boolean         @default(true)
+  isArchived      Boolean         @default(false)
+  postedById      String?         @db.Uuid
+  postedBy        User?           @relation("PlanPoster", fields: [postedById], references: [id], onDelete: SetNull)
   billingInterval BillingInterval @default(one_time)
   currency        String          @default("INR")
   amountMinor     Int
@@ -257,6 +291,7 @@ model Plan {
   updatedAt       DateTime        @updatedAt
   subscriptions   Subscription[]
   paymentOrders   PaymentOrder[]
+  legacyTransactions LegacyTransaction[]
 }
 
 model BillingCustomer {
@@ -306,6 +341,15 @@ model PaymentOrder {
   payuId          String?        @unique
   refundToken     String?        @unique
   refundRequestId String?        @unique
+  productInfo     String?
+  firstName       String?
+  email           String?
+  phone           String?
+  callbackEmailTag String?
+  callbackPhoneTag String?
+  failureCode     String?
+  lastReconciledAt DateTime?
+  reconcileLeaseUntil DateTime?
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
   subscriptions   Subscription[]
@@ -323,6 +367,7 @@ model PaymentEvent {
   processedAt     DateTime?
   status          EventStatus @default(received)
   error           String?
+  payload         Json?
 
   @@unique([provider, providerEventId])
   @@index([status, receivedAt])
@@ -340,6 +385,7 @@ model UsageLedgerEntry {
   unitsDelta     Int
   periodKey      String
   reason         String
+  status         String     @default("committed")
   idempotencyKey String     @unique
   createdAt      DateTime   @default(now())
 
@@ -357,6 +403,7 @@ model BackgroundJob {
   attempts          Int       @default(0)
   nextAttemptAt     DateTime?
   errorCode         String?
+  payload           Json?
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
   evaluationSession Session?  @relation("SessionEvaluation")
@@ -386,6 +433,18 @@ model JobListing {
   company     String
   location    String?
   description String
+  salaryMin   Float?
+  salaryMax   Float?
+  category    String?   @default("General")
+  contractType String?  @default("full_time")
+  featured    Boolean   @default(false)
+  pinned      Boolean   @default(false)
+  archived    Boolean   @default(false)
+  skills      String[] @default([])
+  experience  String?   @default("Not Specified")
+  jobHash     String?   @unique
+  postedById  String?   @db.Uuid
+  postedBy    User?     @relation("JobPoster", fields: [postedById], references: [id], onDelete: SetNull)
   applyUrl    String
   postedAt    DateTime?
   expiresAt   DateTime?
@@ -395,6 +454,7 @@ model JobListing {
 
   @@unique([sourceId, externalId])
   @@index([active, expiresAt, postedAt])
+  @@index([category, contractType, location])
 }
 
 model JobSyncRun {
@@ -417,6 +477,9 @@ model AuditEvent {
   actorUserId String?  @db.Uuid
   actor       User?    @relation("AuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
   action      String
+  category    String?
+  status      String?  @default("success")
+  details     String?
   targetType  String
   targetId    String
   metadata    Json?
@@ -424,4 +487,115 @@ model AuditEvent {
 
   @@index([actorUserId, createdAt])
   @@index([targetType, targetId, createdAt])
+}
+
+model UsageCounter {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @db.Uuid
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  periodKey String
+  units     Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, periodKey])
+}
+
+model LegacyTransaction {
+  id            String   @id @default(uuid()) @db.Uuid
+  userId        String   @db.Uuid
+  user          User     @relation(fields: [userId], references: [id], onDelete: Restrict)
+  planId        String?  @db.Uuid
+  plan          Plan?    @relation(fields: [planId], references: [id], onDelete: SetNull)
+  transactionId String   @unique
+  amountMinor   Int
+  currency      String
+  status        String
+  invoiceUrl    String?
+  paymentMethod String?
+  refundReason  String?
+  refundedAt    DateTime?
+  error         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([userId, createdAt])
+}
+
+model InterviewTemplate {
+  id               String   @id @default(uuid()) @db.Uuid
+  name             String
+  difficulty       String   @default("medium")
+  duration         Int      @default(30)
+  questionCount    Int      @default(5)
+  systemPrompt     String
+  evaluationPrompt String
+  feedbackPrompt   String
+  voiceId          String   @default("alloy")
+  voiceSpeed       Float    @default(1)
+  voicePitch       Float    @default(1)
+  language         String   @default("en")
+  postedById       String?  @db.Uuid
+  postedBy         User?    @relation(fields: [postedById], references: [id], onDelete: SetNull)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([postedById, createdAt])
+}
+
+model SystemPrompt {
+  id              String   @id @default(uuid()) @db.Uuid
+  category        String   @unique
+  name            String
+  content         String
+  description     String   @default("")
+  version         Int      @default(1)
+  history         Json?
+  lastUpdatedById String?  @db.Uuid
+  lastUpdatedBy   User?    @relation("PromptEditor", fields: [lastUpdatedById], references: [id], onDelete: SetNull)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model SystemSetting {
+  id           String   @id @default(uuid()) @db.Uuid
+  singletonKey String   @unique @default("system")
+  general      Json
+  security     Json
+  ai           Json
+  storage      Json
+  featureFlags Json
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model ScraperConfig {
+  id                String    @id @default(uuid()) @db.Uuid
+  singletonKey      String    @unique @default("scraper")
+  scrapeInterval    Int       @default(60)
+  maxJobs           Int       @default(50)
+  keywords          String[]  @default([])
+  country           String    @default("us")
+  remoteOnly        Boolean   @default(true)
+  enabledSources    String[]  @default([])
+  status            String    @default("idle")
+  isActiveScheduler Boolean   @default(true)
+  lastRun           DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+}
+
+model ScraperLog {
+  id             String    @id @default(uuid()) @db.Uuid
+  startTime      DateTime  @default(now())
+  endTime        DateTime?
+  status         String    @default("running")
+  jobsImported   Int       @default(0)
+  jobsUpdated    Int       @default(0)
+  duplicateCount Int       @default(0)
+  error          String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([startTime])
 }

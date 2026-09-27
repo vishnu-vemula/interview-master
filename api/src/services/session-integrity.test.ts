@@ -14,7 +14,7 @@ test('concurrent session starts and answers preserve one session and each answer
     process.env.JWT_SECRET = 'test-access-secret-at-least-32-characters';
     process.env.CLIENT_URL = 'http://localhost:5173';
     await mongoose.connect(uri!);
-    const { default: app } = await import('../app.js') as any;
+    const { default: app } = await import('../legacy-test-app.js') as any;
     const server = app.listen(0);
     try {
       await mongoose.connection.dropDatabase();

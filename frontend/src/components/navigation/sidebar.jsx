@@ -91,11 +91,13 @@ export function SidebarContent({ onNavigate }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
-  const handleLogout = () => {
-    logout();
-    queryClient.clear();
-    toast.success('Logged out');
-    navigate('/login');
+  const handleLogout = async () => {
+    try {
+      await logout();
+      queryClient.clear();
+      toast.success('Logged out');
+      navigate('/login', { replace: true });
+    } catch { toast.error('Could not sign out. Please try again.'); }
   };
 
   return (

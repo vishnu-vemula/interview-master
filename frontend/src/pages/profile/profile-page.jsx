@@ -28,7 +28,7 @@ export default function ProfilePage() {
   const profile = useQuery({ queryKey: ['profile'], queryFn: () => userAPI.getProfile().then((r) => r.data.user) });
   useEffect(() => {
     if (profile.data) updateUser({ name: profile.data.name, totalSessions: profile.data.totalSessions, createdAt: profile.data.createdAt, role: profile.data.role });
-  }, [profile.data]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [profile.data]);
 
   const {
     register, handleSubmit, reset, formState: { errors, isSubmitting, isDirty },

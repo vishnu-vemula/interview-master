@@ -3,7 +3,6 @@ import groq from '../../config/groq';
 import logger from '../../config/logger';
 import { extractContextViaRAG, buildSemanticChunks, createAndStoreEmbeddings, retrieveContextForTopic } from '../rag.service';
 import { optimizeQuery } from '../optimizer.service';
-import SystemPrompt from '../../models/system-prompt.model';
 export const parseResumeAndJD = async (resumeText, jdText) => {
   const defaultPrompt = `You are an expert resume and job description parser.
 

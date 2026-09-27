@@ -1,6 +1,6 @@
 'use strict';
 
-import Job from '../models/job.model';
+import prisma from '../config/prisma';
 import logger from '../config/logger';
 // Common tech keywords to extract from description if the job has no parsed skills
 const TECH_SKILLS_KEYWORDS = [
@@ -51,8 +51,9 @@ const matchUserToJobs = async (userSkills, jobsList = null) => {
     // 1. Retrieve jobs list (either passed argument or query active DB documents)
     let jobs = jobsList;
     if (!jobs) {
-      logger.info('🎯 JobMatchService: Querying active jobs from MongoDB...');
-      jobs = await Job.find({ isActive: true }).lean();
+      logger.info('🎯 JobMatchService: Querying active jobs from PostgreSQL...');
+      jobs = await prisma.jobListing.findMany({ where: { active: true, archived: false,
+        OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] } });
     }
 
     const matchedJobs = [];
@@ -90,6 +91,12 @@ const matchUserToJobs = async (userSkills, jobsList = null) => {
       if (matchScore >= 60) {
         matchedJobs.push({
           ...job,
+          _id: job.id,
+          isActive: job.active,
+          isFeatured: job.featured,
+          isPinned: job.pinned,
+          isArchived: job.archived,
+          redirectUrl: job.applyUrl,
           matchScore,
         });
       }

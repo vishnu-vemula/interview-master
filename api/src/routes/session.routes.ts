@@ -1,6 +1,6 @@
 import express from 'express';
 const router = express.Router();
-import { protect } from '../middleware/auth.middleware';
+import { protectPostgres } from '../middleware/postgres-auth.middleware';
 import { body } from 'express-validator';
 import validate from '../middleware/validate';
 import {
@@ -9,18 +9,18 @@ import {
   completeSession,
   getMySessions,
   getSessionById,
-} from '../controllers/session.controller';
+} from '../controllers/postgres-session.controller';
 
-router.use(protect);
+router.use(protectPostgres);
 
 router.get('/', getMySessions);
-router.post('/start', body('interviewId').isMongoId(), validate, startSession);
+router.post('/start', body('interviewId').isUUID(), validate, startSession);
 router.get('/:id', getSessionById);
 router.post('/:id/answer', [
-  body('questionId').isMongoId(),
+  body('questionId').isUUID(),
   body('answerText').optional().isString().isLength({ max: 4000 }),
   body('timeTaken').optional().isInt({ min: 0, max: 86400 }),
-  body('skipped').optional().isBoolean(),
+  body('skipped').optional().isBoolean({ strict: true }),
 ], validate, submitAnswer);
 router.post('/:id/complete', completeSession);
 

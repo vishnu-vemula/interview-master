@@ -7,7 +7,8 @@ import Plan from '../../models/plan.model';
 import PaymentOrder from '../../models/payment-order.model';
 import Subscription from '../../models/subscription.model';
 import { checkoutHash, responseHash, verifyResponseHash } from './payu';
-import { createCheckout, handlePaymentNotification, requestRefund, reconcileRefund } from './billing.service';
+import { createCheckout, handlePaymentNotification, requestRefund } from './billing.service';
+import { reconcileOutstandingOrders } from './reconciliation';
 import { retireCandidateAccount } from '../account-deletion.service';
 
 const sha = (value: string) => createHash('sha512').update(value).digest('hex');
@@ -44,10 +45,15 @@ test('PayU fulfillment and refund require verified provider state and stay idemp
       const user: any = await User.create({ name: 'Asha Test', email: 'asha@example.com', password: 'StrongPassword123!', role: 'candidate' });
       const plan: any = await Plan.create({ code: 'TEST', name: 'Test Pass', price: 125, amountMinor: 12500,
         currency: 'INR', durationDays: 30, credits: 3, postedBy: user._id });
+      const savedSalt = process.env.PAYU_MERCHANT_SALT;
+      delete process.env.PAYU_MERCHANT_SALT;
+      await assert.rejects(createCheckout(user, String(plan._id), 'idempotency-key-config-test', '9876543210'));
+      assert.equal(await PaymentOrder.countDocuments(), 0);
+      process.env.PAYU_MERCHANT_SALT = savedSalt;
       const first = await createCheckout(user, String(plan._id), 'idempotency-key-0001', '9876543210');
       const repeat = await createCheckout(user, String(plan._id), 'idempotency-key-0001', '9876543210');
       assert.equal(first.transactionId, repeat.transactionId);
-      const { default: app } = await import('../../app.js') as any;
+      const { default: app } = await import('../../legacy-test-app.js') as any;
       const { generateAccessToken, generateRefreshToken } = await import('../../utils/jwt.utils.js');
       const server = app.listen(0);
       try {
@@ -121,6 +127,8 @@ test('PayU fulfillment and refund require verified provider state and stay idemp
       await handlePaymentNotification(callback);
       assert.equal(await Subscription.countDocuments(), 0);
       verifiedStatus = 'success';
+      const recoveredPayment = await reconcileOutstandingOrders();
+      assert.equal(recoveredPayment.settled, 1);
       await handlePaymentNotification(callback);
       await handlePaymentNotification(callback);
       assert.equal(await Subscription.countDocuments(), 1);
@@ -134,7 +142,8 @@ test('PayU fulfillment and refund require verified provider state and stay idemp
       refundToken = refund.refundToken;
       assert.equal(refund.status, 'refund_pending');
       assert.equal(await Subscription.countDocuments({ status: 'active' }), 1);
-      await reconcileRefund(String(order._id));
+      const recoveredRefund = await reconcileOutstandingOrders(new Date(Date.now() + 6 * 60_000));
+      assert.equal(recoveredRefund.settled, 1);
       assert.equal(await Subscription.countDocuments({ status: 'active' }), 0);
       assert.equal((await PaymentOrder.findById(order._id))?.status, 'refunded');
 

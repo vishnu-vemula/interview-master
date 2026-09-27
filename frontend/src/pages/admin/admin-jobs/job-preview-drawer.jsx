@@ -6,6 +6,7 @@ import { DollarSign, Edit3, ExternalLink, MapPin, Tag, Trash2 } from 'lucide-rea
 import { Button, Drawer } from '@/components/ui';
 import { formatDateTime } from '@/utils';
 import { ContractPill, JobFlags, formatSalary } from './job-meta';
+import { safeExternalUrl } from '@/lib/external-url';
 
 function MetaRow({ label, children }) {
   return (
@@ -79,8 +80,8 @@ export default function JobPreviewDrawer({ job, onClose, onEdit, onDelete }) {
             </div>
           </section>
 
-          {job.applyUrl && (
-            <Button variant="blue" href={job.applyUrl} target="_blank" rel="noreferrer" iconRight={ExternalLink} className="w-full justify-center">
+          {safeExternalUrl(job.applyUrl) && (
+            <Button variant="blue" href={safeExternalUrl(job.applyUrl)} target="_blank" rel="noopener noreferrer" iconRight={ExternalLink} className="w-full justify-center">
               Open apply link
             </Button>
           )}

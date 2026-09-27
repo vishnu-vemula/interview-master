@@ -1,41 +1,32 @@
 /**
  * routes/admin.routes.js
  *
- * Two route groups:
- *  1. /api/admin/auth/*  — Public admin auth (login, refresh, logout, me)
- *  2. /api/admin/*       — Protected admin CRUD (all resources)
- *
- * Uses adminAuth middleware (separate from user auth) so tokens are
- * validated against admin roles independently.
+ * Firebase ID tokens authenticate both candidate and staff requests.
+ * Staff authorization uses the current PostgreSQL role and permissions.
  */
 
 import express from 'express';
 const router  = express.Router();
 
-import { protectAdmin, requireSuperAdmin } from '../middleware/admin-auth.middleware';
+import { protectPostgresAdmin as protectAdmin } from '../middleware/postgres-auth.middleware';
+import AppError from '../utils/app-error';
 import { requirePermission } from '../middleware/rbac';
+import prisma from '../config/prisma';
+import logger from '../config/logger';
+
+const requireSuperAdmin = (req: any, _res: any, next: any) =>
+  req.admin?.role === 'super_admin' ? next() : next(new AppError('Super admin required.', 403));
 
 import {
-  adminLogin,
-  adminLogout,
-  adminRefreshToken,
-  getAdminMe,
-} from '../controllers/admin-auth.controller';
-
-import {
-  getStats,
-  getAllUsers,
-  getUserById,
-  updateUser,
-  deleteUser,
-  bulkUserAction,
   getAllInterviews,
   deleteInterview,
   getAllSessions,
   deleteSession,
   getAllResumes,
   deleteResume,
-} from '../controllers/admin.controller';
+} from '../controllers/postgres-admin-content.controller';
+import { getStats, getAnalytics, getAllLogs } from '../controllers/postgres-admin-reporting.controller';
+import { getAllUsers, getUserById, updateUser, deleteUser, bulkUserAction } from '../controllers/postgres-admin-users.controller';
 
 import {
   createJob,
@@ -45,7 +36,7 @@ import {
   updateJob,
   deleteJob,
   bulkJobAction,
-} from '../controllers/admin-job.controller';
+} from '../controllers/postgres-admin-jobs.controller';
 
 import {
   getScraperStatus,
@@ -54,7 +45,7 @@ import {
   pauseScraperScheduler,
   resumeScraperScheduler,
   getScraperLogs,
-} from '../controllers/admin-scraper.controller';
+} from '../controllers/postgres-admin-scraper.controller';
 
 import {
   createTemplate,
@@ -62,14 +53,14 @@ import {
   getTemplateById,
   updateTemplate,
   deleteTemplate,
-} from '../controllers/admin-template.controller';
+} from '../controllers/postgres-admin-templates.controller';
 
 import {
   getAllPrompts,
   getPromptById,
   updatePrompt,
   restorePromptVersion,
-} from '../controllers/admin-prompt.controller';
+} from '../controllers/postgres-admin-prompts.controller';
 
 import {
   createPlan,
@@ -78,7 +69,7 @@ import {
   getPlanById,
   updatePlan,
   deletePlan,
-} from '../controllers/admin-plan.controller';
+} from '../controllers/postgres-admin-plans.controller';
 
 import {
   getAllTransactions,
@@ -86,33 +77,34 @@ import {
   reconcileRefundTransaction,
   getPaymentStats,
   getWebhookLogs,
-} from '../controllers/admin-payment.controller';
+} from '../controllers/postgres-admin-payment.controller';
 
 import {
   getSettings,
   saveSettings,
-} from '../controllers/admin-settings.controller';
+} from '../controllers/postgres-admin-settings.controller';
 
-import {
-  getAnalytics,
-} from '../controllers/admin-analytics.controller';
 
-import {
-  getAllLogs,
-} from '../controllers/admin-log.controller';
-
-// ── Admin Auth (public) ───────────────────────────────────────────
-// POST /api/admin/auth/login    — Admin login (email + password)
-// POST /api/admin/auth/logout   — Admin logout
-// POST /api/admin/auth/refresh  — Refresh admin access token
-// GET  /api/admin/auth/me       — Get current admin profile
-router.post('/auth/login',   adminLogin);
-router.post('/auth/logout',  adminLogout);
-router.post('/auth/refresh', adminRefreshToken);
-router.get('/auth/me',       protectAdmin, getAdminMe);
+// Firebase client sign-in is followed by this database-backed role check.
+router.get('/auth/me', protectAdmin, (req, res) => res.json({ success: true,
+  admin: req.admin, data: { admin: req.admin } }));
 
 // ── Protected admin routes (require admin or super_admin role) ─────
 router.use(protectAdmin);
+router.use((req, res, next) => {
+  if (['POST', 'PATCH', 'PUT', 'DELETE'].includes(req.method)) {
+    const actorUserId = String(req.admin?.id || req.admin?._id || '');
+    const category = req.path.split('/').filter(Boolean)[0] || 'admin';
+    res.once('finish', () => {
+      prisma.auditEvent.create({ data: { actorUserId, action: `${req.method} ${req.path}`,
+        category, status: res.statusCode < 400 ? 'success' : 'failed',
+        details: `HTTP ${res.statusCode}`, targetType: category,
+        targetId: req.path.split('/').filter(Boolean)[2] || 'collection' } })
+        .catch(error => logger.error(`Admin audit persistence failed: ${error.message}`));
+    });
+  }
+  next();
+});
 router.use('/users', requirePermission('view:users'));
 router.use('/jobs', requirePermission('view:jobs'));
 router.use('/scraper', requirePermission('view:scraper'));

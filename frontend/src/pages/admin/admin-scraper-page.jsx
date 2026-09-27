@@ -132,7 +132,7 @@ export default function AdminScraperPage() {
       setDraft(serverDraft);
       setBaseline(serverDraft);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, [serverDraft]);
 
   const refreshAll = () => {

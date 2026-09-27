@@ -43,7 +43,7 @@ test('malformed AI output is retryable and generation/complete retries do not do
       return { choices: [{ message: { content: JSON.stringify(data) } }] };
     };
     await mongoose.connect(uri!);
-    const { default: app } = await import('../app.js') as any;
+    const { default: app } = await import('../legacy-test-app.js') as any;
     const server = app.listen(0);
     try {
       await mongoose.connection.dropDatabase();
@@ -65,11 +65,18 @@ test('malformed AI output is retryable and generation/complete retries do not do
       assert.equal(response.status, 503);
       assert.equal((await Interview.findById(interviewId))?.generationStatus, 'failed');
       assert.equal((await UsageCounter.findOne({ userId: user._id }))?.units, 0);
+      // Simulate an API process dying after claiming generation. A later retry
+      // must be able to reclaim the stale lease and keep one usage debit.
+      await Interview.updateOne({ _id: interviewId }, { $set: {
+        generationStatus: 'generating', generationStartedAt: new Date(Date.now() - 11 * 60_000),
+        generationAttemptId: 'abandoned-attempt',
+      } });
       malformedQuestions = false;
       response = await request(`/interviews/${interviewId}/generate`);
       assert.equal(response.status, 200);
       const interview: any = await Interview.findById(interviewId);
       assert.equal(interview.questions.length, 3);
+      assert.equal(interview.generationAttemptId, null);
       response = await request(`/interviews/${interviewId}/generate`);
       assert.equal(response.status, 200);
       assert.equal((await UsageCounter.findOne({ userId: user._id }))?.units, 1);
@@ -78,6 +85,10 @@ test('malformed AI output is retryable and generation/complete retries do not do
       response = await request('/sessions/start', { interviewId });
       assert.equal(response.status, 201);
       const sessionId = (await response.json()).session._id;
+      response = await request(`/sessions/${sessionId}/complete`);
+      assert.equal(response.status, 400);
+      response = await request(`/sessions/${sessionId}/answer`, { questionId: String(interview.questions[0]._id), answerText: '  ' });
+      assert.equal(response.status, 400);
       for (const question of interview.questions) {
         response = await request(`/sessions/${sessionId}/answer`, { questionId: String(question._id),
           answerText: 'I would use transactions and retries.', timeTaken: 10 });

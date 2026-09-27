@@ -15,6 +15,14 @@ import AppError from '../utils/app-error';
 const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const boundedPage = (value: unknown, fallback: number) => Math.max(1, Math.min(100000, Number.parseInt(String(value), 10) || fallback));
 const boundedLimit = (value: unknown, fallback: number) => Math.max(1, Math.min(100, Number.parseInt(String(value), 10) || fallback));
+const validApplyUrl = (value: unknown) => {
+  if (typeof value !== 'string' || value.length > 2048) return false;
+  if (!value) return true;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && Boolean(url.hostname) && !url.username && !url.password;
+  } catch { return false; }
+};
 // ─── Duplicate Detection Helper ──────────────────────────────────
 // Returns true if a job with same title, company, and location already exists (unarchived).
 const checkDuplicateJob = async (title, company, location) => {
@@ -38,7 +46,7 @@ export const createJob = async (req: Request, res: Response, next: NextFunction)
     typeof company !== 'string' || !company.trim() || company.length > 200 ||
     typeof description !== 'string' || !description.trim() || description.length > 20000 ||
     (location !== undefined && (typeof location !== 'string' || location.length > 200)) ||
-    (applyUrl && (typeof applyUrl !== 'string' || !/^https:\/\//i.test(applyUrl) || applyUrl.length > 2048))) {
+    (applyUrl !== undefined && !validApplyUrl(applyUrl))) {
     return next(new AppError('Job title, company, and description are required.', 400));
   }
 
@@ -170,6 +178,10 @@ export const updateJob = async (req: Request, res: Response, next: NextFunction)
     title, company, location, description, salaryMin, salaryMax,
     contractType, category, isFeatured, isPinned, isArchived, applyUrl
   } = req.body;
+
+  if (applyUrl !== undefined && !validApplyUrl(applyUrl)) {
+    return next(new AppError('Apply URL must be a valid HTTPS address.', 400));
+  }
 
   const job = await Job.findById(req.params.id);
   if (!job) return next(new AppError('Job listing not found.', 404));

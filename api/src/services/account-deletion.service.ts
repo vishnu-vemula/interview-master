@@ -14,6 +14,7 @@ import Job from '../models/job.model';
 import cloudinary from '../config/cloudinary';
 import AppError from '../utils/app-error';
 import { callbackContactTag } from './billing/billing.service';
+import { deleteFirebaseIdentity } from './firebase-identity.service';
 
 /**
  * Retire a legacy candidate account. Keep the minimal order and subscription
@@ -80,4 +81,12 @@ export async function retireCandidateAccount(userId: string) {
   user.refreshToken = undefined;
   user.deletedAt = new Date();
   await user.save();
+}
+
+/** Admin deletion also removes an attached Firebase identity; retry is safe. */
+export async function retireCandidateAndIdentity(userId: string) {
+  const user: any = await User.findById(userId).select('+firebaseUid');
+  if (!user) throw new AppError('User not found.', 404);
+  await retireCandidateAccount(userId);
+  if (user.firebaseUid) await deleteFirebaseIdentity(user.firebaseUid);
 }

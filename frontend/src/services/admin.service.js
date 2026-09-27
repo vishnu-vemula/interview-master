@@ -1,9 +1,8 @@
 /**
  * services/admin.service.js
  *
- * All admin API calls use the dedicated adminAxios instance (lib/adminAxios.js)
- * which reads the admin token from 'ai-admin-auth' localStorage — completely
- * separate from the regular user api instance.
+ * Admin requests use Firebase ID tokens and the API checks the current
+ * PostgreSQL role and permissions for every request.
  */
 
 import adminApi from '@/lib/admin-axios';

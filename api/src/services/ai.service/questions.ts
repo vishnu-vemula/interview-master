@@ -2,7 +2,6 @@ import groq from '../../config/groq';
 import logger from '../../config/logger';
 import { extractContextViaRAG, buildSemanticChunks, createAndStoreEmbeddings, retrieveContextForTopic } from '../rag.service';
 import { optimizeQuery } from '../optimizer.service';
-import SystemPrompt from '../../models/system-prompt.model';
 export const generateInterviewQuestions = async ({
   jobTitle,
   jobDescription,

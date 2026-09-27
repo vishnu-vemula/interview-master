@@ -20,6 +20,10 @@ const paymentOrderSchema = new mongoose.Schema({
   refundToken: { type: String, default: null },
   refundRequestId: { type: String, default: null },
   failureCode: { type: String, default: null },
+  lastReconciledAt: { type: Date, default: null },
+  reconcileLeaseUntil: { type: Date, default: null },
 }, { timestamps: true });
+
+paymentOrderSchema.index({ status: 1, lastReconciledAt: 1, reconcileLeaseUntil: 1 });
 
 export default mongoose.model('PaymentOrder', paymentOrderSchema);

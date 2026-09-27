@@ -25,6 +25,12 @@ const contactMatches = (actual: string, stored: string, tag: string | null | und
 export async function createCheckout(user: any, planId: string, idempotencyKey: string, phone: string) {
   if (!/^[a-zA-Z0-9-]{16,100}$/.test(idempotencyKey)) throw new Error('Valid idempotency key required');
   if (!/^\d{10}$/.test(phone)) throw new Error('A 10-digit phone number is required for PayU checkout');
+  // Reject broken provider configuration before a pending order is persisted.
+  const config = payuConfig();
+  const apiUrl = process.env.API_PUBLIC_URL?.replace(/\/$/, '');
+  if (!apiUrl || !apiUrl.startsWith('https://') && !apiUrl.startsWith('http://localhost:')) {
+    throw new Error('API_PUBLIC_URL must be an HTTPS URL or localhost');
+  }
   const plan: any = await Plan.findOne({ _id: planId, isPublished: true, isArchived: false });
   if (!plan || plan.currency !== 'INR' || !Number.isSafeInteger(plan.amountMinor) || plan.amountMinor < 100 ||
     !Number.isSafeInteger(plan.credits) || plan.credits < 1 || !Number.isSafeInteger(plan.durationDays) || plan.durationDays < 1) {
@@ -55,11 +61,6 @@ export async function createCheckout(user: any, planId: string, idempotencyKey: 
   }
   if (!order || order.status !== 'pending') throw new Error('This checkout is no longer pending');
   if (order.phone !== phone) throw new Error('Idempotency key belongs to another checkout');
-  const config = payuConfig();
-  const apiUrl = process.env.API_PUBLIC_URL?.replace(/\/$/, '');
-  if (!apiUrl || !apiUrl.startsWith('https://') && !apiUrl.startsWith('http://localhost:')) {
-    throw new Error('API_PUBLIC_URL must be an HTTPS URL or localhost');
-  }
   const fields = {
     key: config.key, txnid: order.transactionId, amount: money(order.amountMinor),
     productinfo: order.productInfo, firstname: order.firstName, email: order.email, phone: order.phone,
